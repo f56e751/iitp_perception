@@ -1,0 +1,4 @@
+FROM chaehyeonsong/grounded_sam:latest
+
+# pyrealsense2 wheel ships the librealsense backend, so no extra apt deps needed.
+RUN pip install --no-cache-dir pyrealsense2

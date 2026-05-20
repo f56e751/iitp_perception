@@ -1,0 +1,14 @@
+##parameters
+checkpoint_best.pth
+data_iitp_2
+
+# runtime outputs
+results_local
+tmp_results
+
+# build artifacts
+grounding_dino/build
+grounding_dino/groundingdino.egg-info
+
+*__pycache__
+*.so
