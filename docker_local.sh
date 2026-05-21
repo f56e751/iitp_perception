@@ -11,4 +11,4 @@ docker run -it --rm \
   -v "$PWD":/mnt \
   --name iitp_local \
   iitp_local:latest \
-  bash -c "cd /mnt && python main.py live"
+  bash -c "cd /mnt && python main.py"

@@ -30,7 +30,7 @@ GPU 추론에 **필수**이며, `.so`는 repo에 포함되지 않으므로(`.git
 
 (선택) 배치 모드 단독 확인 — 폴더 안 이미지들에 검출을 돌려 annotated 결과 저장:
 ```bash
-python3 main.py batch -i <폴더>/    # 결과: tmp_results/results_0.2_0.4/<n>.jpg
+python3 iitp_object_detector.py -i <폴더>/    # 결과: tmp_results/results_0.2_0.4/<n>.jpg
 ```
 `-i` 폴더 안에는 `images/` 하위 폴더가 있어야 합니다. 예시 (`data_iitp_2/very_hard/` 같은 샘플 데이터는 repo에 미포함):
 ```bash
@@ -52,24 +52,24 @@ docker rm iitp
 
 ---
 
-## 실행 진입점 — `main.py`
+## 구조: 프로덕션 진입점 vs 평가 도구
 
-모든 실행은 `main.py` 하나를 통해 subcommand로 한다 (`python main.py <command> [options]`).
-컨테이너 안(`cd /mnt`)에서 실행. `python main.py <command> -h` 로 명령별 옵션 확인.
+- **`main.py`** — 프로덕션 진입점. 카메라 입력 → 모델 추론 → 결과를 `results_local/detections.jsonl`에
+  기록 + 포트 8080 MJPEG 스트림 송출. 이것만 한다. 실행은 `docker_local.sh`(아래 "Local capture" 섹션).
+- **`iitp_object_detector.py`** — 공유 엔진(라이브러리). `main.py`와 `scripts/`가 모두 import.
+  단독 폴더 배치 검출도 가능: `python iitp_object_detector.py -i <폴더>/`.
+- **`scripts/`** — 오프라인 평가·분석 도구. 각 스크립트를 직접 실행하거나 `scripts/run_one.sh`로 묶어서 실행.
 
-| 명령 | 설명 | 비고 |
+| `scripts/` 스크립트 | 설명 | 실행 환경 |
 |---|---|---|
-| `live` | 실시간 캡처 + 검출 + MJPEG 스트림 (`results_local/`) | 카메라 필요 (`iitp_local`) |
-| `capture` | 캡처만 (검출 없이 프레임 저장) | 카메라 필요 (`iitp_local`) |
-| `batch` | 이미지 폴더(`<dir>/images/`) 일괄 검출 | base 이미지 |
-| `eval` | 저장 이미지에 클래스별 점수 평가 (`scores.csv`) | base 이미지 |
-| `group` | `scores.csv` 검출을 객체별 CSV로 클러스터링 | 순수 파이썬 |
-| `track` | 검출을 이동 트랙으로 클러스터링 | 순수 파이썬 |
-| `analyze` | 트랙 예측 vs 정답 라벨 비교 | 순수 파이썬 |
-| `correct` | 수동 라벨 보정 적용 | 순수 파이썬 |
-
-아래 모드별 섹션의 docker 래퍼 스크립트(`docker_local.sh`, `perception_eval/docker_capture.sh`,
-`perception_eval/run_one.sh`)도 내부적으로 전부 `python main.py <command>` 를 호출한다.
+| `capture_only.py` | 카메라 캡처만 (검출 없이 프레임 저장) | 카메라 (`iitp_local`) |
+| `eval_detector.py` | 저장 이미지에 클래스별 점수 평가 (`scores.csv`) | base 이미지 |
+| `group_by_object.py` | `scores.csv` 검출을 객체별 CSV로 클러스터링 | 순수 파이썬 |
+| `group_by_track.py` | 검출을 이동 트랙으로 클러스터링 | 순수 파이썬 |
+| `analyze_tracks.py` | 트랙 예측 vs 정답 라벨 비교 | 순수 파이썬 |
+| `apply_corrections.py` | 수동 라벨 보정 적용 | 순수 파이썬 |
+| `docker_capture.sh` | `capture_only.py`를 USB 패스스루 컨테이너로 실행 | 카메라 (`iitp_local`) |
+| `run_one.sh` | capture → eval → group 전체 파이프라인 | — |
 
 ---
 
@@ -80,7 +80,7 @@ RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 �
 ### 구성 파일
 - `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2`만 얹은 파생 이미지 (`iitp_local:latest`)
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
-- `capture_and_detect.py` (`main.py live`) — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 MJPEG 스트림 송출
+- `main.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 MJPEG 스트림 송출
 
 ### 사전 준비 (최초 1회)
 ```bash
@@ -133,7 +133,7 @@ http://147.46.175.15:8080/stream
 | FPS 낮음 | 콘솔의 `objs in 0.XXs` 확인. RTX 4090에서 ~80ms(12 FPS)가 정상 |
 
 ### 포트/해상도 변경
-`capture_and_detect.py` 상단 상수:
+`main.py` 상단 상수:
 ```python
 COLOR_W, COLOR_H, FPS = 640, 480, 30
 STREAM_PORT = 8080
@@ -147,25 +147,25 @@ STREAM_JPEG_QUALITY = 80   # 50~95, 낮을수록 대역폭↓ 화질↓
 검출 모듈을 평가하려고 카메라 이미지를 모으고, 박스마다 세 클래스
 (`transparent` / `metal` / `cardboard`) 점수를 모두 CSV로 뽑는 2단계 워크플로우.
 
-관련 스크립트는 모두 `perception_eval/` 하위 폴더에 모아둠.
+관련 스크립트는 모두 `scripts/` 하위 폴더에 모아둠.
 
 ### Step 1 — 카메라 캡처 (raw JPG만 저장)
 ```bash
 cd /PublicSSD/iitp
-./perception_eval/docker_capture.sh -i 1.0
+./scripts/docker_capture.sh -i 1.0
 # 기본 출력: tmp_results/perception_eval_260520/images/000000.jpg, 000001.jpg, ...
 # 옵션: -i <초> 간격, -o <출력 폴더>
 # Ctrl+C 로 정상 종료
 ```
 `docker_capture.sh` 는 `iitp_local:latest` 이미지를 USB 패스스루로 띄우고
-`main.py capture` 만 실행함 (검출/스트리밍 없음). 어디서
+`scripts/capture_only.py` 만 실행함 (검출/스트리밍 없음). 어디서
 실행하든 자동으로 프로젝트 루트로 cd 하므로 경로 신경 안 써도 됨.
 
 ### Step 2 — 평가 실행
 ```bash
 docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
   --name iitp_eval chaehyeonsong/grounded_sam:latest \
-  bash -c "cd /mnt && python main.py eval -i tmp_results/perception_eval_260520"
+  bash -c "cd /mnt && python scripts/eval_detector.py -i tmp_results/perception_eval_260520"
 ```
 출력:
 - `tmp_results/perception_eval_260520/annotated/<원본이름>.jpg` — 박스가 그려진 이미지

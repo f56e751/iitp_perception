@@ -1,93 +1,182 @@
-#!/usr/bin/env python3
-"""Single entry point for the IITP perception module.
+"""Production entry point: RealSense capture -> detection -> MJPEG stream.
 
-Usage:
-    python main.py <command> [options]
+The camera is plugged directly into this machine and frames are grabbed via
+pyrealsense2 (no network round-trip from a remote robot PC).
 
-Commands:
-    live      RealSense live capture + detection + MJPEG stream (results_local/)
-    capture   RealSense capture only -- save frames, no detection
-    batch     Detection on a folder of images (<dir>/images/)
-    eval      Per-class score evaluation on saved images (scores.csv)
-    group     Cluster scores.csv detections into per-object CSVs
-    track     Cluster detections into motion tracks
-    analyze   Compare track predictions against true labels
-    correct   Apply manual label corrections to grouped objects
-
-`python main.py <command> -h` shows options for that command.
-Camera commands (live, capture) require the iitp_local image; the rest run
-in the base grounded_sam image.
+Detections are appended one JSON record per frame to results_local/detections.jsonl.
+A background thread serves the latest annotated frame at
+    http://<host>:8080/stream
+as MJPEG (multipart/x-mixed-replace) — open in any browser.
 """
+
+import json
+import signal
 import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+import cv2
+import numpy as np
+import pyrealsense2 as rs
+import torch
+
+import iitp_object_detector
+from grounding_dino.groundingdino.util.inference import load_model
+from iitp_object_detector import object_detector
 
 
-def _live():
-    from capture_and_detect import main
-    return main()
+DEVICE = torch.device("cuda:0")
+GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
+GROUNDING_DINO_CHECKPOINT = "checkpoint_best.pth"
+
+OUTPUT_DIR = Path("results_local")
+OUTPUT_DIR.mkdir(exist_ok=True)
+JSONL_PATH = OUTPUT_DIR / "detections.jsonl"
+
+COLOR_W, COLOR_H, FPS = 640, 480, 30
+STREAM_PORT = 8080
+STREAM_JPEG_QUALITY = 80
+
+_latest = {"jpeg": None}
+_latest_lock = threading.Lock()
 
 
-def _capture():
-    from perception_eval.capture_only import main
-    return main()
+class _MJPEGHandler(BaseHTTPRequestHandler):
+    def log_message(self, *_a, **_kw):
+        pass
+
+    def do_GET(self):
+        if self.path in ("/", "/stream"):
+            self._serve_stream()
+        else:
+            self.send_response(404)
+            self.end_headers()
+
+    def _serve_stream(self):
+        self.send_response(200)
+        self.send_header("Age", "0")
+        self.send_header("Cache-Control", "no-cache, private")
+        self.send_header("Pragma", "no-cache")
+        self.send_header(
+            "Content-Type", "multipart/x-mixed-replace; boundary=frame"
+        )
+        self.end_headers()
+        try:
+            while True:
+                with _latest_lock:
+                    data = _latest["jpeg"]
+                if data is None:
+                    time.sleep(0.05)
+                    continue
+                self.wfile.write(b"--frame\r\n")
+                self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                self.wfile.write(
+                    f"Content-Length: {len(data)}\r\n\r\n".encode()
+                )
+                self.wfile.write(data)
+                self.wfile.write(b"\r\n")
+                time.sleep(1.0 / FPS)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
 
-def _batch():
-    from iitp_object_detector import main
-    return main()
+def _start_stream_server() -> None:
+    server = ThreadingHTTPServer(("0.0.0.0", STREAM_PORT), _MJPEGHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(
+        f"MJPEG stream ready: http://<this-host>:{STREAM_PORT}/stream",
+        flush=True,
+    )
 
 
-def _eval():
-    from perception_eval.eval_detector import main
-    return main()
+def _publish_frame(annotated_bgr: np.ndarray) -> None:
+    ok, buf = cv2.imencode(
+        ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY]
+    )
+    if not ok:
+        return
+    data = bytes(buf)
+    with _latest_lock:
+        _latest["jpeg"] = data
 
 
-def _group():
-    from perception_eval.group_by_object import main
-    return main()
+def main() -> None:
+    pipeline = rs.pipeline()
+    cfg = rs.config()
+    cfg.enable_stream(rs.stream.color, COLOR_W, COLOR_H, rs.format.bgr8, FPS)
+    cfg.enable_stream(rs.stream.depth, COLOR_W, COLOR_H, rs.format.z16, FPS)
+    profile = pipeline.start(cfg)
 
+    color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
+    intr = color_profile.get_intrinsics()
+    fx, fy, cx, cy = intr.fx, intr.fy, intr.ppx, intr.ppy
+    print(
+        f"camera intrinsics: fx={fx:.2f} fy={fy:.2f} cx={cx:.2f} cy={cy:.2f}",
+        flush=True,
+    )
 
-def _track():
-    from perception_eval.group_by_track import main
-    return main()
+    align = rs.align(rs.stream.color)
 
+    print("loading grounding model...", flush=True)
+    model = load_model(
+        model_config_path=GROUNDING_DINO_CONFIG,
+        model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
+        device=DEVICE,
+    )
+    print(f"writing results to {JSONL_PATH}", flush=True)
 
-def _analyze():
-    from perception_eval.analyze_tracks import main
-    return main()
+    _start_stream_server()
 
+    stop = {"flag": False}
 
-def _correct():
-    from perception_eval.apply_corrections import main
-    return main()
+    def _handler(signum, _frame):
+        stop["flag"] = True
+    signal.signal(signal.SIGINT, _handler)
+    signal.signal(signal.SIGTERM, _handler)
 
+    f = JSONL_PATH.open("a", buffering=1)
+    try:
+        while not stop["flag"]:
+            frames = pipeline.wait_for_frames()
+            aligned = align.process(frames)
+            color = aligned.get_color_frame()
+            depth = aligned.get_depth_frame()
+            if not color or not depth:
+                continue
+            color_np = np.asanyarray(color.get_data())
+            depth_np = np.asanyarray(depth.get_data())
 
-COMMANDS = {
-    "live": _live,
-    "capture": _capture,
-    "batch": _batch,
-    "eval": _eval,
-    "group": _group,
-    "track": _track,
-    "analyze": _analyze,
-    "correct": _correct,
-}
+            ts = time.time()
+            positions, class_names = object_detector(
+                model, color_np, depth_np, (fx, fy, cx, cy)
+            )
+            elapsed = time.time() - ts
 
+            record = {
+                "timestamp": ts,
+                "elapsed_s": elapsed,
+                "positions": [[float(v) for v in p] for p in positions],
+                "class_names": list(class_names),
+            }
+            f.write(json.dumps(record) + "\n")
 
-def main() -> int:
-    if len(sys.argv) < 2 or sys.argv[1] in ("-h", "--help"):
-        print(__doc__)
-        return 0 if len(sys.argv) >= 2 else 1
+            # Publish latest frame to MJPEG stream. Fall back to the raw
+            # color frame when no detections (annotator was not invoked).
+            frame_to_publish = iitp_object_detector.LAST_ANNOTATED
+            if frame_to_publish is None:
+                frame_to_publish = color_np
+            _publish_frame(frame_to_publish)
 
-    cmd = sys.argv[1]
-    if cmd not in COMMANDS:
-        print(f"unknown command: {cmd!r}\n", file=sys.stderr)
-        print(__doc__, file=sys.stderr)
-        return 2
-
-    # Hand the remaining args to the subcommand's own argparse.
-    sys.argv = [f"{sys.argv[0]} {cmd}", *sys.argv[2:]]
-    rc = COMMANDS[cmd]()
-    return rc if isinstance(rc, int) else 0
+            print(
+                f"[{time.strftime('%H:%M:%S')}] {len(positions)} objs in {elapsed:.2f}s",
+                flush=True,
+            )
+    finally:
+        f.close()
+        pipeline.stop()
+        print("stopped.", flush=True)
 
 
 if __name__ == "__main__":
