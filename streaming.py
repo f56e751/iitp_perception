@@ -21,6 +21,10 @@ _state = {"jpeg": None, "record": None, "seq": 0}
 # Set by start_server(); used to pace the MJPEG stream.
 _fps = 30
 
+# Bump when the detection record layout changes incompatibly. Consumers can
+# read record["schema_version"] to detect a producer/consumer mismatch.
+SCHEMA_VERSION = 1
+
 
 def build_record(timestamp, elapsed_s, positions, class_names, confidences):
     """Serialize one frame's detections into a JSON-ready dict.
@@ -29,6 +33,7 @@ def build_record(timestamp, elapsed_s, positions, class_names, confidences):
     one entry per kept detection).
     """
     return {
+        "schema_version": SCHEMA_VERSION,
         "timestamp": float(timestamp),
         "elapsed_s": float(elapsed_s),
         "positions": [[float(v) for v in p] for p in positions],

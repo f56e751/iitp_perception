@@ -82,7 +82,8 @@ RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 �
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
 - `main.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 영상/검출결과 송출
 - `streaming.py` — :8080 HTTP 전송 계층(MJPEG 영상 + 검출결과 JSON). stdlib 전용
-- `scripts/recv_detections.py` — 다른 컴퓨터에서 검출 스트림을 받아보는 클라이언트 예시
+- `scripts/recv_detections.py` — 스트림 동작 빠른 점검용 CLI
+- `scripts/perception_client.py` — 로봇 PC repo로 복사해 쓰는 재접속 클라이언트(라이브러리)
 
 ### 사전 준비 (최초 1회)
 ```bash
@@ -122,21 +123,30 @@ docker stop iitp_local
 | `GET /detections` | 최신 검출 결과 1건 (JSON) | 폴링 / 디버그 |
 | `GET /detections/stream` | **실시간 검출 스트림 (NDJSON)** | 한 줄당 JSON 1개, 프레임마다 push |
 
-검출 스트림을 받는 가장 간단한 방법 (로봇 PC 등, 추가 패키지 불필요):
+빠른 확인 (스트림 동작 점검용):
 ```bash
 python3 scripts/recv_detections.py --url http://147.46.175.15:8080/detections/stream
 ```
-직접 소비할 때 (NDJSON — 한 줄씩 `json.loads`):
+
+**로봇 제어 PC**는 이 repo를 클론하지 말고, `scripts/perception_client.py` 를 자기 repo로
+**복사**해서 사용 (의존성 stdlib뿐, 자동 재접속 + 스키마 버전 경고 포함):
 ```python
-import json, urllib.request
-with urllib.request.urlopen("http://147.46.175.15:8080/detections/stream") as r:
-    for line in r:
-        rec = json.loads(line)
-        # rec["positions"][i] (X,Y,Z m, 카메라좌표) ↔ rec["class_names"][i] ↔ rec["confidences"][i]
+from perception_client import stream_detections   # 로봇 repo에 복사한 파일
+
+def on_record(rec):
+    for (X, Y, Z), cls, conf in zip(rec["positions"], rec["class_names"], rec["confidences"]):
+        if conf < 0.3:
+            continue
+        # TODO: 카메라좌표 → 로봇 베이스 좌표 변환 후 제어에 사용
+        ...
+
+stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 ```
+이 repo는 카메라 PC에만 두고, 로봇 PC는 위 와이어 스키마(계약)에만 의존하는 게 권장 구조다.
 
 ### 검출 레코드 스키마 (jsonl / `/detections` / 스트림 공통)
 매 프레임 한 줄/한 객체(JSON). 평행 배열로 정렬 일치:
+- `schema_version` — 스키마 버전(정수). 포맷 변경 시 증가 → 소비자가 불일치 감지 (`streaming.SCHEMA_VERSION`)
 - `timestamp` (epoch s), `elapsed_s` (추론 시간)
 - `positions` — `[[X,Y,Z], ...]` 카메라 좌표계, m
 - `class_names` — `["metal"|"transparent"|"cardboard", ...]`

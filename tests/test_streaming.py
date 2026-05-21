@@ -23,8 +23,10 @@ class TestBuildRecord(unittest.TestCase):
         )
         self.assertEqual(
             set(rec),
-            {"timestamp", "elapsed_s", "positions", "class_names", "confidences"},
+            {"schema_version", "timestamp", "elapsed_s",
+             "positions", "class_names", "confidences"},
         )
+        self.assertEqual(rec["schema_version"], streaming.SCHEMA_VERSION)
         self.assertEqual(rec["positions"][0], [0.1, 0.2, 0.3])
         self.assertEqual(rec["class_names"], ["metal", "transparent"])
         self.assertEqual(rec["confidences"], [0.9, 0.5])
@@ -78,6 +80,29 @@ class TestServerEndpoints(unittest.TestCase):
             self.fail("expected HTTP 404")
         except urllib.error.HTTPError as e:
             self.assertEqual(e.code, 404)
+
+    def test_perception_client_consumes_stream(self):
+        import perception_client
+
+        class _Stop(Exception):
+            pass
+
+        rec = streaming.build_record(9.0, 0.01, [(7, 8, 9)], ["cardboard"], [0.7])
+        got = []
+
+        def on_record(r):
+            if r == rec:
+                got.append(r)
+                raise _Stop  # break out of the client's forever loop
+
+        streaming.publish_detections(rec)
+        try:
+            perception_client.stream_detections(
+                self._url("/detections/stream"), on_record, reconnect_delay=0.1
+            )
+        except _Stop:
+            pass
+        self.assertEqual(got, [rec])
 
 
 if __name__ == "__main__":
