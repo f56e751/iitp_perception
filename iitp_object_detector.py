@@ -10,52 +10,21 @@ from torchvision.ops import box_convert
 import grounding_dino.groundingdino.datasets.transforms as T
 from grounding_dino.groundingdino.util.inference import load_model, load_image, predict
 import argparse
+import sys
 import time
 from collections import defaultdict
 from typing import List, Tuple
 
-parser = argparse.ArgumentParser()
-parser.add_argument(
-    "-i",
-    "--input_dir",
-    type=str,
-    default=None,
-)
-opt = parser.parse_args()
 BOX_THRESHOLD = 0.2 ## minimum to be valid bbox
 TEXT_THRESHOLD = 0.4
 TRANSPARANTS_TEXT_THRESHOLD = 0.7
-# ROOT_DIR = "data_iitp_2/very_hard/"
-# ROOT_DIR = os.path.join(opt.input_dir)
-if opt.input_dir is not None:
-    ROOT_DIR = os.path.join(opt.input_dir)
-    IMG_PATH =ROOT_DIR +  "images"
-    frame_names = [
-        p for p in os.listdir(IMG_PATH)
-        if os.path.splitext(p)[-1] in [".JPG", ".jpeg", ".jpg", ".JPEG", ".png"]
-    ]
-# OUTPUT_DIR =  os.path.join(ROOT_DIR,  f"results_{BOX_THRESHOLD}_{TEXT_THRESHOLD}")
 OUTPUT_DIR =  os.path.join("tmp_results/",  f"results_{BOX_THRESHOLD}_{TEXT_THRESHOLD}")
-    
+
 GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 GROUNDING_DINO_CHECKPOINT = "checkpoint_best.pth" #path/to/weight
 
 TEXT_PROMPT = "786dvpteg. k3m9t8z1q. d7f2x4b6n." #transparent(786dvpteg), metal(k3m9t8z1q), cardboard(d7f2x4b6n)
-# 786dvpteg. object
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-os.makedirs(OUTPUT_DIR, exist_ok=True)
-# grounding_model = load_model(
-#     model_config_path=GROUNDING_DINO_CONFIG, 
-#     model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
-#     device=DEVICE
-# )
-
-
-# frame_names = [
-#     p for p in os.listdir(IMG_PATH)
-#     if os.path.splitext(p)[-1] in [".JPG", ".jpeg", ".jpg", ".JPEG", ".png"]
-# ]
 
 
 def _iou_xyxy(box: np.ndarray, boxes: np.ndarray) -> np.ndarray:
@@ -345,6 +314,7 @@ LAST_ANNOTATED = None  # latest annotated BGR frame; consumed by external stream
 def object_detector(model, color_np, depth_np, camera_intrinsics):
     global counter, LAST_ANNOTATED
     LAST_ANNOTATED = None
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
 # frame_names = sorted(frame_names)
 # for frame_idx in range(len(frame_names)):
     ## do not use i in this loop!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
@@ -461,11 +431,15 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
     return positions, class_names.tolist()
 
 
-# if ITERATIVE:
-#     print("Iteration mode-----------------")
-if __name__ == "__main__":
+def run_batch(input_dir):
+    images_dir = os.path.join(input_dir, "images")
+    frame_names = [
+        p for p in os.listdir(images_dir)
+        if os.path.splitext(p)[-1] in [".JPG", ".jpeg", ".jpg", ".JPEG", ".png"]
+    ]
+    os.makedirs(OUTPUT_DIR, exist_ok=True)
     grounding_model = load_model(
-        model_config_path=GROUNDING_DINO_CONFIG, 
+        model_config_path=GROUNDING_DINO_CONFIG,
         model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
         device=DEVICE
     )
@@ -476,7 +450,7 @@ if __name__ == "__main__":
         start = time.perf_counter()
         print(frame_names[frame_idx])
         text = TEXT_PROMPT
-        img_path = os.path.join(IMG_PATH, frame_names[frame_idx])
+        img_path = os.path.join(images_dir, frame_names[frame_idx])
         image_source, image = load_image(img_path)
         print(image.shape)
         # sam2_predictor.set_image(image_source)
@@ -561,3 +535,23 @@ if __name__ == "__main__":
         cv2.imwrite(out_path, annotated)
         elapsed = time.perf_counter() - start
         print(f"{frame_idx}th image is finished. total time: {elapsed:.3f} s")
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="Batch detection on a folder of images (<input-dir>/images/)."
+    )
+    p.add_argument(
+        "-i", "--input_dir", required=True,
+        help="Folder containing an images/ subdirectory.",
+    )
+    return p.parse_args()
+
+
+def main():
+    run_batch(parse_args().input_dir)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

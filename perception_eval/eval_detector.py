@@ -38,23 +38,14 @@ from grounding_dino.groundingdino.util.inference import (
 )
 from grounding_dino.groundingdino.util.utils import get_phrases_from_posmap
 
-# iitp_object_detector.py runs argparse at module load and, when it sees
-# --input-dir, attempts os.listdir on a derived path — which crashes during
-# import because the path concat there is broken for our layout. Suppress
-# argv just for this one import so the module loads cleanly.
-_argv_backup = sys.argv[:]
-sys.argv = sys.argv[:1]
-try:
-    from iitp_object_detector import (
-        BOX_THRESHOLD,
-        GROUNDING_DINO_CHECKPOINT,
-        GROUNDING_DINO_CONFIG,
-        TEXT_PROMPT,
-        TEXT_THRESHOLD,
-        nms_by_label,
-    )
-finally:
-    sys.argv = _argv_backup
+from iitp_object_detector import (
+    BOX_THRESHOLD,
+    GROUNDING_DINO_CHECKPOINT,
+    GROUNDING_DINO_CONFIG,
+    TEXT_PROMPT,
+    TEXT_THRESHOLD,
+    nms_by_label,
+)
 
 
 # Order here MUST match the order of phrases in TEXT_PROMPT.

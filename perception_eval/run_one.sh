@@ -17,11 +17,11 @@ echo "=== capture ==="
 echo "=== eval ==="
 docker run -i --rm --gpus all --ipc=host -v "$PWD":/mnt \
   --name iitp_eval chaehyeonsong/grounded_sam:latest \
-  bash -c "cd /mnt && python perception_eval/eval_detector.py -i $ROOT"
+  bash -c "cd /mnt && python main.py eval -i $ROOT"
 
 echo "=== chown ==="
 docker run --rm -v "$PWD":/mnt iitp_local:latest \
   chown -R "$(id -u):$(id -g)" "/mnt/$ROOT"
 
 echo "=== group ==="
-python3 perception_eval/group_by_object.py -i "$ROOT"
+python3 main.py group -i "$ROOT"

@@ -32,7 +32,7 @@ GPU 추론에 **필수**이며, `.so`는 repo에 포함되지 않으므로(`.git
 
 (선택) 배치 모드 단독 확인 — 폴더 안 이미지들에 검출을 돌려 annotated 결과 저장:
 ```bash
-python3 iitp_object_detector.py -i <폴더>/    # 결과: tmp_results/results_0.2_0.4/<n>.jpg
+python3 main.py batch -i <폴더>/    # 결과: tmp_results/results_0.2_0.4/<n>.jpg
 ```
 `-i` 폴더 안에는 `images/` 하위 폴더가 있어야 합니다. 예시 (`data_iitp_2/very_hard/` 같은 샘플 데이터는 repo에 미포함):
 ```bash
@@ -54,6 +54,27 @@ docker rm iitp
 
 ---
 
+## 실행 진입점 — `main.py`
+
+모든 실행은 `main.py` 하나를 통해 subcommand로 한다 (`python main.py <command> [options]`).
+컨테이너 안(`cd /mnt`)에서 실행. `python main.py <command> -h` 로 명령별 옵션 확인.
+
+| 명령 | 설명 | 비고 |
+|---|---|---|
+| `live` | 실시간 캡처 + 검출 + MJPEG 스트림 (`results_local/`) | 카메라 필요 (`iitp_local`) |
+| `capture` | 캡처만 (검출 없이 프레임 저장) | 카메라 필요 (`iitp_local`) |
+| `batch` | 이미지 폴더(`<dir>/images/`) 일괄 검출 | base 이미지 |
+| `eval` | 저장 이미지에 클래스별 점수 평가 (`scores.csv`) | base 이미지 |
+| `group` | `scores.csv` 검출을 객체별 CSV로 클러스터링 | 순수 파이썬 |
+| `track` | 검출을 이동 트랙으로 클러스터링 | 순수 파이썬 |
+| `analyze` | 트랙 예측 vs 정답 라벨 비교 | 순수 파이썬 |
+| `correct` | 수동 라벨 보정 적용 | 순수 파이썬 |
+
+아래 모드별 섹션의 docker 래퍼 스크립트(`docker_local.sh`, `perception_eval/docker_capture.sh`,
+`perception_eval/run_one.sh`)도 내부적으로 전부 `python main.py <command>` 를 호출한다.
+
+---
+
 ## Local capture + MJPEG stream (robot6 직결 모드)
 
 RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 왕복 없이 바로 SAM 추론을 돌리고 바운딩박스가 그려진 영상을 다른 컴퓨터(로봇 PC 등)의 브라우저로 실시간 송출하는 모드.
@@ -61,7 +82,7 @@ RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 �
 ### 구성 파일
 - `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2`만 얹은 파생 이미지 (`iitp_local:latest`)
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
-- `capture_and_detect.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 MJPEG 스트림 송출
+- `capture_and_detect.py` (`main.py live`) — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 MJPEG 스트림 송출
 
 ### 사전 준비 (최초 1회)
 ```bash
@@ -139,14 +160,14 @@ cd /PublicSSD/iitp
 # Ctrl+C 로 정상 종료
 ```
 `docker_capture.sh` 는 `iitp_local:latest` 이미지를 USB 패스스루로 띄우고
-`perception_eval/capture_only.py` 만 실행함 (검출/스트리밍 없음). 어디서
+`main.py capture` 만 실행함 (검출/스트리밍 없음). 어디서
 실행하든 자동으로 프로젝트 루트로 cd 하므로 경로 신경 안 써도 됨.
 
 ### Step 2 — 평가 실행
 ```bash
 docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
   --name iitp_eval chaehyeonsong/grounded_sam:latest \
-  bash -c "cd /mnt && python perception_eval/eval_detector.py -i tmp_results/perception_eval_260520"
+  bash -c "cd /mnt && python main.py eval -i tmp_results/perception_eval_260520"
 ```
 출력:
 - `tmp_results/perception_eval_260520/annotated/<원본이름>.jpg` — 박스가 그려진 이미지

@@ -11,4 +11,4 @@ docker run -it --rm \
   -v "$PWD":/mnt \
   --name iitp_local \
   iitp_local:latest \
-  bash -c "cd /mnt && python capture_and_detect.py"
+  bash -c "cd /mnt && python main.py live"
