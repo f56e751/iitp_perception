@@ -80,7 +80,9 @@ RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 �
 ### 구성 파일
 - `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2`만 얹은 파생 이미지 (`iitp_local:latest`)
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
-- `main.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 MJPEG 스트림 송출
+- `main.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 영상/검출결과 송출
+- `streaming.py` — :8080 HTTP 전송 계층(MJPEG 영상 + 검출결과 JSON). stdlib 전용
+- `scripts/recv_detections.py` — 다른 컴퓨터에서 검출 스트림을 받아보는 클라이언트 예시
 
 ### 사전 준비 (최초 1회)
 ```bash
@@ -101,7 +103,7 @@ lsusb | grep RealSense        # Intel Corp. Intel(R) RealSense(TM) ... 확인
 cd /PublicSSD/iitp
 ./docker_local.sh
 ```
-- 모델 로드(~20초) 후 `MJPEG stream ready: http://<this-host>:8080/stream` 출력되면 준비 완료
+- 모델 로드(~20초) 후 `streams ready on :8080 ...` 출력되면 준비 완료
 - 중단: 콘솔에서 `Ctrl+C` (컨테이너는 `--rm`이라 자동 정리)
 
 SSH 끊어도 계속 돌리고 싶을 때:
@@ -111,16 +113,37 @@ cd /PublicSSD/iitp && nohup ./docker_local.sh > stream.log 2>&1 &
 docker stop iitp_local
 ```
 
-### 클라이언트에서 영상 보기 (다른 컴퓨터)
-브라우저 또는 VLC에서:
+### 다른 컴퓨터에서 받기 (포트 8080 공유)
+같은 LAN이면 서버 IP `147.46.175.15` (안 되면 `147.46.240.59`) 사용. 여러 명 동시 접속 가능.
+
+| 엔드포인트 | 용도 | 소비 방법 |
+|---|---|---|
+| `GET /stream` | annotated MJPEG 영상 | 브라우저 / VLC |
+| `GET /detections` | 최신 검출 결과 1건 (JSON) | 폴링 / 디버그 |
+| `GET /detections/stream` | **실시간 검출 스트림 (NDJSON)** | 한 줄당 JSON 1개, 프레임마다 push |
+
+검출 스트림을 받는 가장 간단한 방법 (로봇 PC 등, 추가 패키지 불필요):
+```bash
+python3 scripts/recv_detections.py --url http://147.46.175.15:8080/detections/stream
 ```
-http://147.46.175.15:8080/stream
+직접 소비할 때 (NDJSON — 한 줄씩 `json.loads`):
+```python
+import json, urllib.request
+with urllib.request.urlopen("http://147.46.175.15:8080/detections/stream") as r:
+    for line in r:
+        rec = json.loads(line)
+        # rec["positions"][i] (X,Y,Z m, 카메라좌표) ↔ rec["class_names"][i] ↔ rec["confidences"][i]
 ```
-- 같은 캠퍼스 LAN이면 위 IP 사용. 안 되면 `147.46.240.59`도 시도.
-- 여러 명이 동시에 접속해도 됨.
+
+### 검출 레코드 스키마 (jsonl / `/detections` / 스트림 공통)
+매 프레임 한 줄/한 객체(JSON). 평행 배열로 정렬 일치:
+- `timestamp` (epoch s), `elapsed_s` (추론 시간)
+- `positions` — `[[X,Y,Z], ...]` 카메라 좌표계, m
+- `class_names` — `["metal"|"transparent"|"cardboard", ...]`
+- `confidences` — `[float, ...]` 객체별 top score
 
 ### 결과 파일
-- `results_local/detections.jsonl` — 매 프레임 한 줄. 필드: `timestamp`, `elapsed_s`, `positions`(카메라 좌표계 (X,Y,Z), m), `class_names`(`metal`/`transparent`/`cardboard`)
+- `results_local/detections.jsonl` — 위 스키마로 매 프레임 한 줄 누적 기록
 - `tmp_results/results_0.2_0.4/{counter}.jpg` — 매 프레임 annotated 이미지 (기존 `object_detector` 동작 그대로)
 
 ### 트러블슈팅
@@ -199,6 +222,7 @@ docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
 | `test_group_by_track.py` | `is_ahead`/`centroid`/`distance`, 트랙 생성 | 호스트 (cv2) |
 | `test_analyze_tracks.py` | 혼동행렬·정확도 집계 | 호스트 |
 | `test_apply_corrections.py` | delete/reassign 보정 적용 | 호스트 (cv2) |
+| `test_streaming.py` | `build_record`, /detections·/detections/stream 엔드포인트 | 호스트 |
 | `test_engine.py` | `_iou_xyxy`, `nms_by_label`, 기하/마스크 | 컨테이너 (torch) |
 | `test_eval_detector.py` | `class_spans`, `per_class_scores` | 컨테이너 (torch) |
 

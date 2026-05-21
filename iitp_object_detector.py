@@ -341,7 +341,7 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
         print(f"No object in {counter}!!!")
         counter += 1
         # continue
-        return [], []
+        return [], [], []
 
     labels = []
     mask = torch.zeros_like(t_confidences)<1
@@ -428,7 +428,7 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
         fx, fy, cx, cy = camera_intrinsics
         X, Y, Z = (u - cx) / fx * depth, (v - cy) / fy * depth, depth
         positions.append((X, Y, Z))
-    return positions, class_names.tolist()
+    return positions, class_names.tolist(), confidences.tolist()
 
 
 def run_batch(input_dir):

@@ -1,20 +1,19 @@
-"""Production entry point: RealSense capture -> detection -> MJPEG stream.
+"""Production entry point: RealSense capture -> detection -> stream out.
 
 The camera is plugged directly into this machine and frames are grabbed via
 pyrealsense2 (no network round-trip from a remote robot PC).
 
-Detections are appended one JSON record per frame to results_local/detections.jsonl.
-A background thread serves the latest annotated frame at
-    http://<host>:8080/stream
-as MJPEG (multipart/x-mixed-replace) — open in any browser.
+Detections are appended one JSON record per frame to results_local/detections.jsonl
+and pushed live to other computers over HTTP (see streaming.py):
+    http://<host>:8080/stream             annotated MJPEG video
+    http://<host>:8080/detections         latest detection record (JSON)
+    http://<host>:8080/detections/stream  live NDJSON detection stream
 """
 
 import json
 import signal
 import sys
-import threading
 import time
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import cv2
@@ -23,6 +22,7 @@ import pyrealsense2 as rs
 import torch
 
 import iitp_object_detector
+import streaming
 from grounding_dino.groundingdino.util.inference import load_model
 from iitp_object_detector import object_detector
 
@@ -39,67 +39,13 @@ COLOR_W, COLOR_H, FPS = 640, 480, 30
 STREAM_PORT = 8080
 STREAM_JPEG_QUALITY = 80
 
-_latest = {"jpeg": None}
-_latest_lock = threading.Lock()
-
-
-class _MJPEGHandler(BaseHTTPRequestHandler):
-    def log_message(self, *_a, **_kw):
-        pass
-
-    def do_GET(self):
-        if self.path in ("/", "/stream"):
-            self._serve_stream()
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-    def _serve_stream(self):
-        self.send_response(200)
-        self.send_header("Age", "0")
-        self.send_header("Cache-Control", "no-cache, private")
-        self.send_header("Pragma", "no-cache")
-        self.send_header(
-            "Content-Type", "multipart/x-mixed-replace; boundary=frame"
-        )
-        self.end_headers()
-        try:
-            while True:
-                with _latest_lock:
-                    data = _latest["jpeg"]
-                if data is None:
-                    time.sleep(0.05)
-                    continue
-                self.wfile.write(b"--frame\r\n")
-                self.wfile.write(b"Content-Type: image/jpeg\r\n")
-                self.wfile.write(
-                    f"Content-Length: {len(data)}\r\n\r\n".encode()
-                )
-                self.wfile.write(data)
-                self.wfile.write(b"\r\n")
-                time.sleep(1.0 / FPS)
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-
-
-def _start_stream_server() -> None:
-    server = ThreadingHTTPServer(("0.0.0.0", STREAM_PORT), _MJPEGHandler)
-    threading.Thread(target=server.serve_forever, daemon=True).start()
-    print(
-        f"MJPEG stream ready: http://<this-host>:{STREAM_PORT}/stream",
-        flush=True,
-    )
-
 
 def _publish_frame(annotated_bgr: np.ndarray) -> None:
     ok, buf = cv2.imencode(
         ".jpg", annotated_bgr, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY]
     )
-    if not ok:
-        return
-    data = bytes(buf)
-    with _latest_lock:
-        _latest["jpeg"] = data
+    if ok:
+        streaming.publish_frame(bytes(buf))
 
 
 def main() -> None:
@@ -127,7 +73,12 @@ def main() -> None:
     )
     print(f"writing results to {JSONL_PATH}", flush=True)
 
-    _start_stream_server()
+    streaming.start_server(STREAM_PORT, FPS)
+    print(
+        f"streams ready on :{STREAM_PORT}  "
+        f"(/stream video, /detections latest, /detections/stream live)",
+        flush=True,
+    )
 
     stop = {"flag": False}
 
@@ -149,18 +100,16 @@ def main() -> None:
             depth_np = np.asanyarray(depth.get_data())
 
             ts = time.time()
-            positions, class_names = object_detector(
+            positions, class_names, confidences = object_detector(
                 model, color_np, depth_np, (fx, fy, cx, cy)
             )
             elapsed = time.time() - ts
 
-            record = {
-                "timestamp": ts,
-                "elapsed_s": elapsed,
-                "positions": [[float(v) for v in p] for p in positions],
-                "class_names": list(class_names),
-            }
+            record = streaming.build_record(
+                ts, elapsed, positions, class_names, confidences
+            )
             f.write(json.dumps(record) + "\n")
+            streaming.publish_detections(record)
 
             # Publish latest frame to MJPEG stream. Fall back to the raw
             # color frame when no detections (annotator was not invoked).
