@@ -84,6 +84,7 @@ RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 �
 - `streaming.py` — :8080 HTTP 전송 계층(MJPEG 영상 + 검출결과 JSON). stdlib 전용
 - `scripts/recv_detections.py` — 스트림 동작 빠른 점검용 CLI
 - `scripts/perception_client.py` — 로봇 PC repo로 복사해 쓰는 재접속 클라이언트(라이브러리)
+- `scripts/fake_stream.py` — 카메라/모델 없이 합성 검출을 송출하는 더미 producer(수신 테스트용)
 
 ### 사전 준비 (최초 1회)
 ```bash
@@ -126,6 +127,13 @@ docker stop iitp_local
 빠른 확인 (스트림 동작 점검용):
 ```bash
 python3 scripts/recv_detections.py --url http://147.46.175.15:8080/detections/stream
+```
+
+카메라/모델 없이 수신 코드를 테스트하려면 **더미 producer**를 띄운다 (stdlib만, GPU 불필요):
+```bash
+python3 scripts/fake_stream.py --port 8080            # 합성 검출 레코드를 :8080으로 발행
+# 다른 터미널/PC에서:
+python3 scripts/perception_client.py --url http://127.0.0.1:8080/detections/stream
 ```
 
 **로봇 제어 PC**는 이 repo를 클론하지 말고, `scripts/perception_client.py` 를 자기 repo로
@@ -233,6 +241,7 @@ docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
 | `test_analyze_tracks.py` | 혼동행렬·정확도 집계 | 호스트 |
 | `test_apply_corrections.py` | delete/reassign 보정 적용 | 호스트 (cv2) |
 | `test_streaming.py` | `build_record`, /detections·/detections/stream 엔드포인트 | 호스트 |
+| `test_fake_stream.py` | 더미 producer `random_detections` 정합성 | 호스트 |
 | `test_engine.py` | `_iou_xyxy`, `nms_by_label`, 기하/마스크 | 컨테이너 (torch) |
 | `test_eval_detector.py` | `class_spans`, `per_class_scores` | 컨테이너 (torch) |
 
