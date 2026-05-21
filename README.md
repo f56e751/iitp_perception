@@ -1,51 +1,46 @@
 아래 명령어들을 실행하기 위해서는 docker 권한이 있어야 함. Docker 권한 부여 방법을 모르는 경우 문의 바람. (송지환)
 
-## Docker build & Run
+## Docker build (최초 1회)
 ```bash
-# git clone https://github.com/chaehyeonsong/iitp_perception.git
-git clone https://github.com/Jihwan-Song/iitp_perception.git
+git clone https://github.com/f56e751/iitp_perception.git
 cd iitp_perception
-wget -c --show-progress -O checkpoint_best.pth https://www.dropbox.com/scl/fi/yzvoq6w4nm8x9dr5jr0ve/checkpoint_best.pth?rlkey=042faepbpcsc3liw2o3ak5oxz&st=284u74ef&dl=0
-## 위 wget download가 끝나면 enter 한번 눌러주세요 ##
+
+# 모델 가중치 다운로드 (~1.2 GB, repo에 포함되지 않음)
+wget -c --show-progress -O checkpoint_best.pth "https://www.dropbox.com/scl/fi/yzvoq6w4nm8x9dr5jr0ve/checkpoint_best.pth?rlkey=042faepbpcsc3liw2o3ak5oxz&st=284u74ef&dl=0"
+
+# 베이스 이미지를 포함된 Dockerfile로 로컬 빌드 (외부 레지스트리에서 받아오지 않음).
+# 태그 chaehyeonsong/grounded_sam 은 Dockerfile.local / docker.sh / run_one.sh 가
+# 참조하므로, 이름을 바꾸려면 그쪽도 함께 수정해야 함.
 docker build -t chaehyeonsong/grounded_sam .
-docker run -it --gpus all --ipc=host -v $PWD:/mnt --name iitp chaehyeonsong/grounded_sam:latest
 ```
 
-위 도커는 pytorch:2.3.1-cuda12.1 환경에서 build됩니다. 만약 gpu driver version이 cuda 12.1을 지원하지 않는경우 더 낮춰서 사용해주세요.
+위 도커는 pytorch:2.3.1-cuda12.1 환경에서 build됩니다. GPU driver가 cuda 12.1을 지원하지 않으면 Dockerfile의 베이스 태그를 더 낮춰서 사용해주세요.
 
-## In docker container (iitp)
+## GroundingDINO CUDA 확장 빌드 (최초 1회, 필수)
 ```bash
+docker run -it --gpus all --ipc=host -v $PWD:/mnt --name iitp chaehyeonsong/grounded_sam:latest
+# ↑ 컨테이너 진입 후:
 cd /mnt
 python -m pip install --no-build-isolation -e grounding_dino
-python3 iitp_object_detector.py -i data_iitp_2/very_hard/
 ```
+이 단계는 GroundingDINO의 CUDA 커널(`grounding_dino/groundingdino/_C*.so`)을 컴파일합니다.
+GPU 추론에 **필수**이며, `.so`는 repo에 포함되지 않으므로(`.gitignore`) clone 후 머신마다 한 번 빌드해야 합니다.
+(CPU에서는 순수 파이썬 fallback이 돌지만 이 프로젝트는 GPU 전제라 사실상 필수.)
+빌드 결과 `.so`는 mount된 호스트 폴더(`grounding_dino/`)에 남으므로, 이후 `iitp_local`·eval 컨테이너에서도 재빌드 없이 재사용됩니다.
 
--i 옵션 뒤에 이미지들이 있는 폴더명을 넣으시면 됩니다.
-해당 폴더안에는 images라는 폴더가 꼭 있어야 합니다. 아래 파일트리 참고
+> 실제 perception 실행은 아래 **Local capture + MJPEG stream**(실시간 카메라) 또는 **Perception evaluation**(저장 이미지 평가) 섹션 참고.
+
+(선택) 배치 모드 단독 확인 — 폴더 안 이미지들에 검출을 돌려 annotated 결과 저장:
 ```bash
-very_hard
-    ├── images
-    │   ├── 37.jpg
-    │   ├── 38.jpg
-    │   ├── 39.jpg
-    │   ├── 40.jpg
-    │   ├── 41.jpg
-    │   ├── 42.jpg
-    │   ├── 43.jpg
-    │   ├── 44.jpg
-    │   ├── 45.jpg
-    │   └── 46.jpg
-    └── results_0.2_0.4 (코드 돌리면 자동 생성됨)
+python3 iitp_object_detector.py -i <폴더>/    # 결과: tmp_results/results_0.2_0.4/<n>.jpg
+```
+`-i` 폴더 안에는 `images/` 하위 폴더가 있어야 합니다. 예시 (`data_iitp_2/very_hard/` 같은 샘플 데이터는 repo에 미포함):
+```bash
+<폴더>
+    └── images
         ├── 37.jpg
         ├── 38.jpg
-        ├── 39.jpg
-        ├── 40.jpg
-        ├── 41.jpg
-        ├── 42.jpg
-        ├── 43.jpg
-        ├── 44.jpg
-        ├── 45.jpg
-        └── 46.jpg
+        └── ...
 ```
 
 ## Exiting docker
