@@ -175,3 +175,32 @@ docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
 
 `score_*` 는 Grounding-DINO 가 각 클래스 토큰 스팬에 대해 낸 sigmoid 점수의
 최댓값이라 한 박스 안에서 세 점수를 직접 비교 가능 (헷갈리는 케이스 진단용).
+
+---
+
+## Tests
+
+`tests/` 에 stdlib `unittest` 기반 테스트가 있다. 별도 설치 없이 실행:
+
+```bash
+# 호스트: 순수 로직(grouping/tracking/analyze/corrections) 테스트가 돌고,
+# 엔진/eval 테스트는 torch가 없어 자동 skip 된다.
+python3 -m unittest discover -s tests
+
+# 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): grounded_sam 컨테이너에서
+docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
+  --name iitp_test chaehyeonsong/grounded_sam:latest \
+  bash -c "cd /mnt && python -m unittest discover -s tests"
+```
+
+| 테스트 파일 | 대상 | 실행 환경 |
+|---|---|---|
+| `test_group_by_object.py` | `iou`, IoU 클러스터링 | 호스트 |
+| `test_group_by_track.py` | `is_ahead`/`centroid`/`distance`, 트랙 생성 | 호스트 (cv2) |
+| `test_analyze_tracks.py` | 혼동행렬·정확도 집계 | 호스트 |
+| `test_apply_corrections.py` | delete/reassign 보정 적용 | 호스트 (cv2) |
+| `test_engine.py` | `_iou_xyxy`, `nms_by_label`, 기하/마스크 | 컨테이너 (torch) |
+| `test_eval_detector.py` | `class_spans`, `per_class_scores` | 컨테이너 (torch) |
+
+카메라/모델이 필요한 경로(`main.py` live, `eval_detector.main`)는 단위 테스트 대상이 아니라
+실제 실행(스모크)으로 확인한다. 새 기능은 먼저 `tests/`에 케이스를 추가(red)하고 구현(green)하는 식으로 관리.
