@@ -1,5 +1,3 @@
-아래 명령어들을 실행하기 위해서는 docker 권한이 있어야 함. Docker 권한 부여 방법을 모르는 경우 문의 바람. (송지환)
-
 ## Docker build (최초 1회)
 ```bash
 git clone https://github.com/f56e751/iitp_perception.git
