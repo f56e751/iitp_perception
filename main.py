@@ -55,18 +55,36 @@ def _publish_frame(annotated_bgr: np.ndarray) -> None:
         streaming.publish_frame(bytes(buf))
 
 
-# Annotators for the live stream. Drawing happens on the FULL frame (after the
-# sides are blurred) so a box label near the crop edge can spill over the
-# blurred region instead of being clipped. text_scale mirrors the engine.
+# Annotators for the live stream. Two supervision LabelAnnotators give the
+# class line and the coordinate line the same filled-background "CSS" style;
+# the coord line just uses a smaller text scale.
 _BOX_ANNOTATOR = sv.BoxAnnotator(thickness=2)
-_LABEL_ANNOTATOR = sv.LabelAnnotator(text_thickness=1, text_scale=0.5)
+_CLASS_PADDING = 10
+_COORD_PADDING = 5
+_LABEL_ANNOTATOR_CLASS = sv.LabelAnnotator(
+    text_thickness=1, text_scale=0.5, text_padding=_CLASS_PADDING
+)
+_LABEL_ANNOTATOR_COORD = sv.LabelAnnotator(
+    text_thickness=1, text_scale=0.3, text_padding=_COORD_PADDING
+)
+
+
+def _label_box_height(text_scale: float, text_padding: int) -> int:
+    """Match supervision's label-box height = text_height + 2*text_padding."""
+    (_, text_h), _ = cv2.getTextSize(
+        "Ag", cv2.FONT_HERSHEY_SIMPLEX, text_scale, 1
+    )
+    return text_h + 2 * text_padding
+
+
+_COORD_LABEL_H = _label_box_height(0.3, _COORD_PADDING)
 
 
 def _compose_stream_frame(
     full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int
 ) -> np.ndarray:
     """Full-size frame: trimmed side quarters blurred, raw center dropped in,
-    then detection boxes/labels drawn on top in full-frame coordinates.
+    then detection boxes and stacked labels drawn on top in full-frame coords.
 
     `center_bgr` is the raw center crop spanning columns [x0:x1) and the full
     height. Boxes come from the detector in crop coords and are shifted by x0,
@@ -84,8 +102,30 @@ def _compose_stream_frame(
         xyxy[:, [0, 2]] += x0  # crop pixel coords -> full-frame coords
         shifted = sv.Detections(xyxy=xyxy, class_id=det.class_id)
         out = _BOX_ANNOTATOR.annotate(scene=out, detections=shifted)
-        out = _LABEL_ANNOTATOR.annotate(
-            scene=out, detections=shifted, labels=labels
+
+        # Engine builds "<class> <score> (<X>,<Y>,<Z>)m"; split on first " (".
+        heads, coords = [], []
+        for lbl in labels:
+            if " (" in lbl:
+                h, t = lbl.split(" (", 1)
+                heads.append(h)
+                coords.append("(" + t)
+            else:
+                heads.append(lbl)
+                coords.append("")
+
+        # Stack two supervision labels above the box: class on top, coord just
+        # above the box. Coord uses the real box (drawn first, sits at box top).
+        # Class uses a virtual box shifted up by coord-label-height so it lands
+        # right above the coord label.
+        out = _LABEL_ANNOTATOR_COORD.annotate(
+            scene=out, detections=shifted, labels=coords
+        )
+        virt_xyxy = xyxy.copy()
+        virt_xyxy[:, 1] -= _COORD_LABEL_H  # raise the top so class sits higher
+        virt = sv.Detections(xyxy=virt_xyxy, class_id=det.class_id)
+        out = _LABEL_ANNOTATOR_CLASS.annotate(
+            scene=out, detections=virt, labels=heads
         )
     return out
 

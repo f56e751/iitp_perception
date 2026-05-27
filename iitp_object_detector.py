@@ -411,7 +411,7 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
 
     if confidences is not None:
         label_texts = [
-            f"{name} {score:.2f} {pos[2]:.2f}m"
+            f"{name} {score:.2f} ({pos[0]:+.2f},{pos[1]:+.2f},{pos[2]:.2f})m"
             for name, score, pos in zip(class_names, confidences, positions)
         ]
 
