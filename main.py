@@ -46,6 +46,13 @@ STREAM_JPEG_QUALITY = 80
 SIDE_CROP_FRAC = 0.25
 BLUR_SIGMA = 15  # Gaussian sigma for the blurred side quarters in the stream
 
+# Calibration for the depth-free pixel-ratio projection: the real-world length
+# (m) that the FULL image height (COLOR_H pixels) spans on the working plane.
+# X and Y are then computed as pixel offsets from the image center scaled by
+# the same metres-per-pixel (square-pixel assumption: fx ~= fy on D455).
+# Origin = image center; +X right, +Y down (camera frame). Z is not measured.
+VISIBLE_Y_LENGTH_M = 0.78
+
 
 def _publish_frame(annotated_bgr: np.ndarray) -> None:
     ok, buf = cv2.imencode(
@@ -148,14 +155,28 @@ def main() -> None:
     # Center crop fed to the model: trim SIDE_CROP_FRAC off each side.
     crop_x0 = int(round(COLOR_W * SIDE_CROP_FRAC))
     crop_x1 = COLOR_W - crop_x0
-    # Cropping shifts the principal point left by crop_x0 (fx/fy/cy unchanged),
-    # so 3D positions stay in true camera coordinates.
-    intr_crop = (fx, fy, cx - crop_x0, cy)
     print(
-        f"inference crop: cols [{crop_x0}:{crop_x1}] of {COLOR_W} "
-        f"(cx {cx:.1f} -> {cx - crop_x0:.1f})",
+        f"inference crop: cols [{crop_x0}:{crop_x1}] of {COLOR_W}", flush=True
+    )
+
+    # Depth-free pixel-ratio projection. Box-center pixel (u, v) in crop coords
+    # is mapped to full-frame pixel, then offset from image center and scaled
+    # by m/pixel derived from VISIBLE_Y_LENGTH_M. depth_np is intentionally
+    # unused. Z is set to 0.0 (placeholder, not measured).
+    m_per_pixel = VISIBLE_Y_LENGTH_M / COLOR_H
+    img_cx = COLOR_W / 2.0
+    img_cy = COLOR_H / 2.0
+    print(
+        f"projection: pixel-ratio, {m_per_pixel * 1000:.3f} mm/px "
+        f"(image span {COLOR_W * m_per_pixel:.3f} x {COLOR_H * m_per_pixel:.3f} m)",
         flush=True,
     )
+
+    def project(u_crop, v_crop, _depth_np):
+        u_full = u_crop + crop_x0
+        X = (u_full - img_cx) * m_per_pixel
+        Y = (v_crop - img_cy) * m_per_pixel
+        return (X, Y, 0.0)
 
     align = rs.align(rs.stream.color)
 
@@ -199,7 +220,7 @@ def main() -> None:
 
             ts = time.time()
             positions, class_names, confidences = object_detector(
-                model, color_crop, depth_crop, intr_crop
+                model, color_crop, depth_crop, project
             )
             elapsed = time.time() - ts
 

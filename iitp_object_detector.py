@@ -313,7 +313,7 @@ counter = 0
 LAST_ANNOTATED = None  # latest annotated BGR frame; consumed by external streamers
 LAST_DETECTIONS = None  # latest sv.Detections in crop pixel coords; for external annotating
 LAST_LABELS = None  # latest per-detection label strings, aligned with LAST_DETECTIONS
-def object_detector(model, color_np, depth_np, camera_intrinsics):
+def object_detector(model, color_np, depth_np, project):
     global counter, LAST_ANNOTATED, LAST_DETECTIONS, LAST_LABELS
     LAST_ANNOTATED = None
     LAST_DETECTIONS = None
@@ -396,22 +396,16 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
         class_id=class_ids     # (M,)
     )
 
-    # 2D -> 3D first: depth per detection feeds both the returned positions and
-    # the distance shown in each box label on the annotated frame.
+    # 2D -> 3D via the caller-supplied projection. Stays generic so main.py
+    # can pick the formula (pinhole + depth, pixel-ratio + assumed plane, ...).
     positions = []
     for input_box in input_boxes:
         u, v = (input_box[0] + input_box[2]) / 2, (input_box[1] + input_box[3]) / 2
-        depth = depth_np[int(v), int(u)] / 1000.0  # Assuming mm to m
-        if depth <= 0.1 or depth >= 5.0:
-            pass    # raise exception?
-
-        fx, fy, cx, cy = camera_intrinsics
-        X, Y, Z = (u - cx) / fx * depth, (v - cy) / fy * depth, depth
-        positions.append((X, Y, Z))
+        positions.append(project(u, v, depth_np))
 
     if confidences is not None:
         label_texts = [
-            f"{name} {score:.2f} ({pos[0]:+.2f},{pos[1]:+.2f},{pos[2]:.2f})m"
+            f"{name} {score:.2f} ({pos[0]:+.2f},{pos[1]:+.2f})m"
             for name, score, pos in zip(class_names, confidences, positions)
         ]
 
