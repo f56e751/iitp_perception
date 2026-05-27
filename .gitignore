@@ -6,6 +6,9 @@ data_iitp_2
 results_local
 tmp_results
 
+# per-installation calibration (snapshot + homography from calibrate_homography.py)
+calibration
+
 # build artifacts
 grounding_dino/build
 grounding_dino/groundingdino.egg-info

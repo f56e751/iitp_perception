@@ -159,24 +159,40 @@ def main() -> None:
         f"inference crop: cols [{crop_x0}:{crop_x1}] of {COLOR_W}", flush=True
     )
 
-    # Depth-free pixel-ratio projection. Box-center pixel (u, v) in crop coords
-    # is mapped to full-frame pixel, then offset from image center and scaled
-    # by m/pixel derived from VISIBLE_Y_LENGTH_M. depth_np is intentionally
-    # unused. Z is set to 0.0 (placeholder, not measured).
-    m_per_pixel = VISIBLE_Y_LENGTH_M / COLOR_H
-    img_cx = COLOR_W / 2.0
-    img_cy = COLOR_H / 2.0
-    print(
-        f"projection: pixel-ratio, {m_per_pixel * 1000:.3f} mm/px "
-        f"(image span {COLOR_W * m_per_pixel:.3f} x {COLOR_H * m_per_pixel:.3f} m)",
-        flush=True,
-    )
+    # Depth-free projection. Prefer a 4-point homography (handles camera tilt)
+    # if calibration/homography.json exists; otherwise fall back to the plain
+    # pixel-ratio scaled to VISIBLE_Y_LENGTH_M. Z is always 0.0 (not measured).
+    homography_path = Path("calibration/homography.json")
+    if homography_path.exists():
+        cal = json.loads(homography_path.read_text())
+        H_cm = np.array(cal["homography"], dtype=np.float64)
+        print(
+            f"projection: homography from {homography_path} "
+            f"(calibrated on {len(cal.get('calibration_points', []))} points)",
+            flush=True,
+        )
 
-    def project(u_crop, v_crop, _depth_np):
-        u_full = u_crop + crop_x0
-        X = (u_full - img_cx) * m_per_pixel
-        Y = (v_crop - img_cy) * m_per_pixel
-        return (X, Y, 0.0)
+        def project(u_crop, v_crop, _depth_np):
+            u_full = u_crop + crop_x0
+            h = H_cm @ np.array([u_full, v_crop, 1.0])
+            X_cm, Y_cm = h[0] / h[2], h[1] / h[2]
+            return (X_cm / 100.0, Y_cm / 100.0, 0.0)
+    else:
+        m_per_pixel = VISIBLE_Y_LENGTH_M / COLOR_H
+        img_cx = COLOR_W / 2.0
+        img_cy = COLOR_H / 2.0
+        print(
+            f"projection: pixel-ratio, {m_per_pixel * 1000:.3f} mm/px "
+            f"(image span {COLOR_W * m_per_pixel:.3f} x {COLOR_H * m_per_pixel:.3f} m) "
+            f"-- run scripts/calibrate_homography.py to tilt-correct",
+            flush=True,
+        )
+
+        def project(u_crop, v_crop, _depth_np):
+            u_full = u_crop + crop_x0
+            X = (u_full - img_cx) * m_per_pixel
+            Y = (v_crop - img_cy) * m_per_pixel
+            return (X, Y, 0.0)
 
     align = rs.align(rs.stream.color)
 
