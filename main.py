@@ -219,40 +219,24 @@ def main() -> None:
     # Depth-free projection. Prefer a 4-point homography (handles camera tilt)
     # if calibration/homography.json exists; otherwise fall back to the plain
     # pixel-ratio scaled to VISIBLE_Y_LENGTH_M. Z is always 0.0 (not measured).
-    # px_to_cm/cm_to_px map FULL-frame pixels <-> real cm on the working plane.
-    homography_path = Path("calibration/homography.json")
-    if homography_path.exists():
-        cal = json.loads(homography_path.read_text())
-        H_cm = np.array(cal["homography"], dtype=np.float64)
-        H_inv = np.linalg.inv(H_cm)
-        print(
-            f"projection: homography from {homography_path} "
-            f"(calibrated on {len(cal.get('calibration_points', []))} points)",
-            flush=True,
-        )
+    # Flat 2D-plane assumption: no camera-tilt / homography correction. Pure
+    # linear pixel-ratio mapping (image center origin, +X right, +Y down),
+    # scaled so the full image height spans VISIBLE_Y_LENGTH_M. px_to_cm /
+    # cm_to_px map FULL-frame pixels <-> real cm.
+    cm_per_pixel = (VISIBLE_Y_LENGTH_M / COLOR_H) * 100.0
+    img_cx = COLOR_W / 2.0
+    img_cy = COLOR_H / 2.0
+    print(
+        f"projection: flat 2D pixel-ratio, {cm_per_pixel * 10:.3f} mm/px "
+        f"(no tilt correction)",
+        flush=True,
+    )
 
-        def px_to_cm(u_full, v):
-            h = H_cm @ np.array([u_full, v, 1.0])
-            return h[0] / h[2], h[1] / h[2]
+    def px_to_cm(u_full, v):
+        return (u_full - img_cx) * cm_per_pixel, (v - img_cy) * cm_per_pixel
 
-        def cm_to_px(x_cm, y_cm):
-            h = H_inv @ np.array([x_cm, y_cm, 1.0])
-            return h[0] / h[2], h[1] / h[2]
-    else:
-        m_per_cm = (VISIBLE_Y_LENGTH_M / COLOR_H) * 100.0  # pixels-per-cm denom
-        img_cx = COLOR_W / 2.0
-        img_cy = COLOR_H / 2.0
-        print(
-            f"projection: pixel-ratio, {m_per_cm * 10:.3f} mm/px "
-            f"-- run scripts/calibrate_homography.py to tilt-correct",
-            flush=True,
-        )
-
-        def px_to_cm(u_full, v):
-            return (u_full - img_cx) * m_per_cm, (v - img_cy) * m_per_cm
-
-        def cm_to_px(x_cm, y_cm):
-            return x_cm / m_per_cm + img_cx, y_cm / m_per_cm + img_cy
+    def cm_to_px(x_cm, y_cm):
+        return x_cm / cm_per_pixel + img_cx, y_cm / cm_per_pixel + img_cy
 
     def project(u_crop, v_crop, _depth_np):
         x_cm, y_cm = px_to_cm(u_crop + crop_x0, v_crop)
