@@ -53,6 +53,10 @@ BLUR_SIGMA = 15  # Gaussian sigma for the blurred side quarters in the stream
 # Origin = image center; +X right, +Y down (camera frame). Z is not measured.
 VISIBLE_Y_LENGTH_M = 0.78
 
+# Real-world coordinate grid drawn (thin) on the stream, in cm.
+GRID_STEP_CM = 5          # spacing between grid lines
+GRID_LABEL_EVERY_CM = 10  # label only every Nth line to avoid clutter
+
 
 def _publish_frame(annotated_bgr: np.ndarray) -> None:
     ok, buf = cv2.imencode(
@@ -87,11 +91,61 @@ def _label_box_height(text_scale: float, text_padding: int) -> int:
 _COORD_LABEL_H = _label_box_height(0.3, _COORD_PADDING)
 
 
+def _build_grid(px_to_cm, cm_to_px, x0, x1, height, step_cm):
+    """Precompute pixel line segments for a real-world `step_cm` grid covering
+    the cm extent visible in the inference column [x0, x1).
+
+    Returns (segments, clip_rect); each segment is (value_cm, axis, p0, p1)
+    with axis "x" (constant X, vertical-ish) or "y" (constant Y).
+    """
+    import math
+    corners = [(x0, 0), (x1, 0), (x1, height), (x0, height)]
+    xs, ys = zip(*(px_to_cm(u, v) for u, v in corners))
+    x_lo = math.floor(min(xs) / step_cm) * step_cm
+    x_hi = math.ceil(max(xs) / step_cm) * step_cm
+    y_lo = math.floor(min(ys) / step_cm) * step_cm
+    y_hi = math.ceil(max(ys) / step_cm) * step_cm
+
+    segs = []
+    val = x_lo
+    while val <= x_hi + 1e-6:
+        segs.append((val, "x", cm_to_px(val, y_lo), cm_to_px(val, y_hi)))
+        val += step_cm
+    val = y_lo
+    while val <= y_hi + 1e-6:
+        segs.append((val, "y", cm_to_px(x_lo, val), cm_to_px(x_hi, val)))
+        val += step_cm
+    return segs, (int(x0), 0, int(x1 - x0), int(height))
+
+
+def _draw_grid(out: np.ndarray, grid) -> None:
+    """Draw the precomputed cm grid, clipped to the inference column."""
+    segs, rect = grid
+    for value, axis, p0, p1 in segs:
+        q0 = (int(round(p0[0])), int(round(p0[1])))
+        q1 = (int(round(p1[0])), int(round(p1[1])))
+        ok, a, b = cv2.clipLine(rect, q0, q1)
+        if not ok:
+            continue
+        is_axis = abs(value) < 1e-6
+        color = (0, 215, 255) if is_axis else (110, 110, 110)
+        cv2.line(out, a, b, color, 1, cv2.LINE_AA)
+        if round(value) % GRID_LABEL_EVERY_CM == 0:
+            if axis == "x":
+                lx, ly = a if a[1] < b[1] else b
+                cv2.putText(out, f"{value:+.0f}", (lx + 2, ly + 11),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1, cv2.LINE_AA)
+            else:
+                lx, ly = a if a[0] < b[0] else b
+                cv2.putText(out, f"{value:+.0f}", (lx + 2, ly - 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.3, color, 1, cv2.LINE_AA)
+
+
 def _compose_stream_frame(
-    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int
+    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int, grid=None
 ) -> np.ndarray:
     """Full-size frame: trimmed side quarters blurred, raw center dropped in,
-    then detection boxes and stacked labels drawn on top in full-frame coords.
+    then the cm grid and detection boxes/labels drawn on top in full-frame coords.
 
     `center_bgr` is the raw center crop spanning columns [x0:x1) and the full
     height. Boxes come from the detector in crop coords and are shifted by x0,
@@ -101,6 +155,9 @@ def _compose_stream_frame(
     out[:, :x0] = cv2.GaussianBlur(out[:, :x0], (0, 0), BLUR_SIGMA)
     out[:, x1:] = cv2.GaussianBlur(out[:, x1:], (0, 0), BLUR_SIGMA)
     out[:, x0:x1] = center_bgr
+
+    if grid is not None:
+        _draw_grid(out, grid)
 
     det = iitp_object_detector.LAST_DETECTIONS
     labels = iitp_object_detector.LAST_LABELS
@@ -162,37 +219,47 @@ def main() -> None:
     # Depth-free projection. Prefer a 4-point homography (handles camera tilt)
     # if calibration/homography.json exists; otherwise fall back to the plain
     # pixel-ratio scaled to VISIBLE_Y_LENGTH_M. Z is always 0.0 (not measured).
+    # px_to_cm/cm_to_px map FULL-frame pixels <-> real cm on the working plane.
     homography_path = Path("calibration/homography.json")
     if homography_path.exists():
         cal = json.loads(homography_path.read_text())
         H_cm = np.array(cal["homography"], dtype=np.float64)
+        H_inv = np.linalg.inv(H_cm)
         print(
             f"projection: homography from {homography_path} "
             f"(calibrated on {len(cal.get('calibration_points', []))} points)",
             flush=True,
         )
 
-        def project(u_crop, v_crop, _depth_np):
-            u_full = u_crop + crop_x0
-            h = H_cm @ np.array([u_full, v_crop, 1.0])
-            X_cm, Y_cm = h[0] / h[2], h[1] / h[2]
-            return (X_cm / 100.0, Y_cm / 100.0, 0.0)
+        def px_to_cm(u_full, v):
+            h = H_cm @ np.array([u_full, v, 1.0])
+            return h[0] / h[2], h[1] / h[2]
+
+        def cm_to_px(x_cm, y_cm):
+            h = H_inv @ np.array([x_cm, y_cm, 1.0])
+            return h[0] / h[2], h[1] / h[2]
     else:
-        m_per_pixel = VISIBLE_Y_LENGTH_M / COLOR_H
+        m_per_cm = (VISIBLE_Y_LENGTH_M / COLOR_H) * 100.0  # pixels-per-cm denom
         img_cx = COLOR_W / 2.0
         img_cy = COLOR_H / 2.0
         print(
-            f"projection: pixel-ratio, {m_per_pixel * 1000:.3f} mm/px "
-            f"(image span {COLOR_W * m_per_pixel:.3f} x {COLOR_H * m_per_pixel:.3f} m) "
+            f"projection: pixel-ratio, {m_per_cm * 10:.3f} mm/px "
             f"-- run scripts/calibrate_homography.py to tilt-correct",
             flush=True,
         )
 
-        def project(u_crop, v_crop, _depth_np):
-            u_full = u_crop + crop_x0
-            X = (u_full - img_cx) * m_per_pixel
-            Y = (v_crop - img_cy) * m_per_pixel
-            return (X, Y, 0.0)
+        def px_to_cm(u_full, v):
+            return (u_full - img_cx) * m_per_cm, (v - img_cy) * m_per_cm
+
+        def cm_to_px(x_cm, y_cm):
+            return x_cm / m_per_cm + img_cx, y_cm / m_per_cm + img_cy
+
+    def project(u_crop, v_crop, _depth_np):
+        x_cm, y_cm = px_to_cm(u_crop + crop_x0, v_crop)
+        return (x_cm / 100.0, y_cm / 100.0, 0.0)
+
+    # Precompute the cm grid once (drawn on the stream each frame).
+    grid = _build_grid(px_to_cm, cm_to_px, crop_x0, crop_x1, COLOR_H, GRID_STEP_CM)
 
     align = rs.align(rs.stream.color)
 
@@ -250,7 +317,7 @@ def main() -> None:
             # center dropped in, and detection boxes/labels drawn on top (labels
             # may overlap the blurred sides).
             frame_to_publish = _compose_stream_frame(
-                color_np, color_crop, crop_x0, crop_x1
+                color_np, color_crop, crop_x0, crop_x1, grid
             )
             _publish_frame(frame_to_publish)
 
