@@ -51,7 +51,9 @@ BLUR_SIGMA = 15  # Gaussian sigma for the blurred side quarters in the stream
 # X and Y are then computed as pixel offsets from the image center scaled by
 # the same metres-per-pixel (square-pixel assumption: fx ~= fy on D455).
 # Origin = image center; +X right, +Y down (camera frame). Z is not measured.
-VISIBLE_Y_LENGTH_M = 0.78
+# Calibrated from a 50 cm-wide box spanning 297 px -> 0.16835 cm/px
+# (0.16835 cm/px * 480 px = 80.8 cm full-height span).
+VISIBLE_Y_LENGTH_M = 0.808
 
 # Real-world coordinate grid drawn (thin) on the stream, in cm.
 GRID_STEP_CM = 5          # spacing between grid lines
