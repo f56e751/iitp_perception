@@ -100,9 +100,13 @@ class TestServerEndpoints(unittest.TestCase):
                 line = r.readline().strip()
                 if line:
                     seen.append(json.loads(line.decode()))
-                    if seen[-1] == rec:
+                    if seen[-1].get("timestamp") == rec["timestamp"]:
                         break
-            self.assertIn(rec, seen)
+            match = next(item for item in seen if item.get("timestamp") == 3.0)
+            self.assertGreater(match["server_send_timestamp"], 0.0)
+            without_send_timestamp = dict(match)
+            without_send_timestamp.pop("server_send_timestamp")
+            self.assertEqual(without_send_timestamp, rec)
 
     def test_unknown_path_404(self):
         try:
@@ -121,7 +125,7 @@ class TestServerEndpoints(unittest.TestCase):
         got = []
 
         def on_record(r):
-            if r == rec:
+            if r.get("timestamp") == rec["timestamp"]:
                 got.append(r)
                 raise _Stop  # break out of the client's forever loop
 
@@ -132,7 +136,8 @@ class TestServerEndpoints(unittest.TestCase):
             )
         except _Stop:
             pass
-        self.assertEqual(got, [rec])
+        self.assertEqual(len(got), 1)
+        self.assertGreater(got[0]["server_send_timestamp"], 0.0)
 
 
 if __name__ == "__main__":

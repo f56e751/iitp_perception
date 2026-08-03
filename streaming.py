@@ -167,7 +167,13 @@ class _Handler(BaseHTTPRequestHandler):
                     time.sleep(0.01)
                     continue
                 last_seq = seq
-                self.wfile.write((json.dumps(record) + "\n").encode())
+                # Per-client wall-clock stamp taken immediately before JSON
+                # serialization/write.  A synchronized consumer can subtract
+                # this from its receipt time to observe the live stream/network
+                # leg instead of relying on a fixed transport constant.
+                wire_record = dict(record)
+                wire_record["server_send_timestamp"] = time.time()
+                self.wfile.write((json.dumps(wire_record) + "\n").encode())
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
             pass

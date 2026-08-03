@@ -11,6 +11,7 @@ output purely through the documented wire contract:
       "capture_timestamp": <RealSense global-time epoch s or null>,
       "capture_age_s": <frame-to-inference-start seconds or null>,
       "capture_timestamp_domain": <RealSense timestamp domain>,
+      "server_send_timestamp": <epoch s, added immediately before stream write>,
       "bounding_boxes": [                # belt frame, metres; clockwise
         [[X_tl,Y_tl,Z], [X_tr,Y_tr,Z], [X_br,Y_br,Z], [X_bl,Y_bl,Z]], ...
       ],

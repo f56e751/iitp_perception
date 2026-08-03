@@ -175,6 +175,8 @@ NTP 방식으로 두 PC의 시계 오프셋과 RTT를 먼저 추정하고, 실�
 - `capture_timestamp` — RealSense global-time 프레임 시각(epoch s), 사용할 수 없으면 `null`
 - `capture_age_s` — 실제 프레임 시각부터 추론 시작까지의 시간(초). 센서/USB/align/crop 포함
 - `capture_timestamp_domain` — RealSense timestamp domain 진단 문자열
+- `server_send_timestamp` — 스트림 응답을 직렬화·전송하기 직전의 서버 epoch 시각
+  (각 클라이언트의 `/detections/stream` 레코드에만 추가)
 - `bounding_boxes` — 객체별 네 모서리 `[[TL],[TR],[BR],[BL]]`; 각 점은
   belt-plane `[X,Y,Z]` 좌표(m)
 - `class_names` — `["metal"|"transparent"|"cardboard", ...]`
