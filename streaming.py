@@ -5,12 +5,15 @@ Serves, on a single port:
   GET /detections             -> latest detection record (application/json)
   GET /detections/stream      -> live NDJSON stream (one JSON record per line,
                                  flushed as each new frame is produced)
+  GET /latency                -> server receive/send timestamps for NTP-style
+                                 clock-offset and network-delay measurement
 
 main.py feeds this module via publish_frame() / publish_detections(); the
 detection stream pushes the freshest record whenever the frame sequence
 advances (a slow client skips intermediate frames, like the MJPEG stream).
 """
 import json
+import socket
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -59,19 +62,45 @@ def publish_detections(record):
 
 
 class _Handler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def setup(self):
+        super().setup()
+        self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+
     def log_message(self, *_a, **_kw):
         pass
 
     def do_GET(self):
-        if self.path in ("/", "/stream"):
+        server_receive_ns = time.time_ns()
+        path = self.path.split("?", 1)[0]
+        if path in ("/", "/stream"):
             self._serve_mjpeg()
-        elif self.path == "/detections":
+        elif path == "/detections":
             self._serve_detection_latest()
-        elif self.path == "/detections/stream":
+        elif path == "/detections/stream":
             self._serve_detection_stream()
+        elif path == "/latency":
+            self._serve_latency(server_receive_ns)
         else:
             self.send_response(404)
+            self.send_header("Content-Length", "0")
             self.end_headers()
+
+    def _serve_latency(self, server_receive_ns):
+        """Return timestamps used by the robot PC for an NTP-style probe."""
+        payload = {
+            "protocol": "gp8-latency-v1",
+            "server_receive_time_ns": int(server_receive_ns),
+            "server_send_time_ns": time.time_ns(),
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def _serve_mjpeg(self):
         self.send_response(200)

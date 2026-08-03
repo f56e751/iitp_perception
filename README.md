@@ -123,6 +123,7 @@ docker stop iitp_local
 | `GET /stream` | annotated MJPEG 영상 | 브라우저 / VLC |
 | `GET /detections` | 최신 검출 결과 1건 (JSON) | 폴링 / 디버그 |
 | `GET /detections/stream` | **실시간 검출 스트림 (NDJSON)** | 한 줄당 JSON 1개, 프레임마다 push |
+| `GET /latency` | 서버 수신/송신 시각 | 로봇 PC의 RTT·시계 오프셋·잔여 스트림 지연 측정 |
 
 빠른 확인 (스트림 동작 점검용):
 ```bash
@@ -152,6 +153,20 @@ def on_record(rec):
 stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 ```
 이 repo는 카메라 PC에만 두고, 로봇 PC는 위 와이어 스키마(계약)에만 의존하는 게 권장 구조다.
+
+### 네트워크/스트림 지연 측정
+
+별도 서버를 띄울 필요 없이 평소처럼 live pipeline을 실행하면 `/latency`도 같은
+8080 포트에서 제공된다. 정확한 측정을 위해 실제 카메라와 모델이 동작하는 상태로 둔다.
+
+```bash
+./docker_local.sh
+# 이미 필요한 Python/CUDA 환경 안에 있다면: python3 main.py
+```
+
+로봇 PC에서는 `gp8_control/tools/measure_perception_latency.py`를 실행한다. 이 도구는
+NTP 방식으로 두 PC의 시계 오프셋과 RTT를 먼저 추정하고, 실제 검출 스트림의
+`timestamp`와 `elapsed_s`를 비교해 `GP8_PERCEPTION_LATENCY_S` 권장값을 출력한다.
 
 ### 검출 레코드 스키마 (jsonl / `/detections` / 스트림 공통)
 매 프레임 한 줄/한 객체(JSON). 평행 배열로 정렬 일치:

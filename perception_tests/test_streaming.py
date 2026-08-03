@@ -68,6 +68,18 @@ class TestServerEndpoints(unittest.TestCase):
             got = json.loads(r.read().decode())
         self.assertEqual(got, rec)
 
+    def test_latency_probe_returns_ordered_server_timestamps(self):
+        before = time.time_ns()
+        with urllib.request.urlopen(self._url("/latency?nonce=1"), timeout=2) as r:
+            got = json.loads(r.read().decode())
+        after = time.time_ns()
+        self.assertEqual(got["protocol"], "gp8-latency-v1")
+        self.assertLessEqual(before, got["server_receive_time_ns"])
+        self.assertLessEqual(
+            got["server_receive_time_ns"], got["server_send_time_ns"]
+        )
+        self.assertLessEqual(got["server_send_time_ns"], after)
+
     def test_stream_pushes_new_record(self):
         # Unique record so we can distinguish it from any stale frame the
         # stream may emit first (handler pushes latest-on-seq-change).

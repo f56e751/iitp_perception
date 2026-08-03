@@ -62,7 +62,11 @@ def main() -> int:
         while True:
             bounding_boxes, class_names, confidences = random_detections(args.max_objects, rng)
             record = streaming.build_record(
-                time.time(), args.interval, bounding_boxes, class_names, confidences
+                time.time() - args.interval,
+                args.interval,
+                bounding_boxes,
+                class_names,
+                confidences,
             )
             streaming.publish_detections(record)
             print(f"published {len(class_names)} objs: {class_names}", flush=True)
