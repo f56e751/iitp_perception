@@ -14,6 +14,7 @@ import sys
 import time
 from collections import defaultdict
 from typing import List, Tuple
+from bbox_projection import project_bounding_boxes
 
 BOX_THRESHOLD = 0.2 ## minimum to be valid bbox
 TEXT_THRESHOLD = 0.4
@@ -313,6 +314,8 @@ counter = 0
 LAST_ANNOTATED = None  # latest annotated BGR frame; consumed by external streamers
 LAST_DETECTIONS = None  # latest sv.Detections in crop pixel coords; for external annotating
 LAST_LABELS = None  # latest per-detection label strings, aligned with LAST_DETECTIONS
+
+
 def object_detector(model, color_np, depth_np, project):
     global counter, LAST_ANNOTATED, LAST_DETECTIONS, LAST_LABELS
     LAST_ANNOTATED = None
@@ -396,17 +399,17 @@ def object_detector(model, color_np, depth_np, project):
         class_id=class_ids     # (M,)
     )
 
-    # 2D -> 3D via the caller-supplied projection. Stays generic so main.py
-    # can pick the formula (pinhole + depth, pixel-ratio + assumed plane, ...).
-    positions = []
-    for input_box in input_boxes:
-        u, v = (input_box[0] + input_box[2]) / 2, (input_box[1] + input_box[3]) / 2
-        positions.append(project(u, v, depth_np))
+    # Project the complete 2D box instead of reducing it to its centre.  Corner
+    # order is clockwise from top-left; main.py's flat projection returns belt
+    # plane metres for every point.
+    bounding_boxes = project_bounding_boxes(input_boxes, project, depth_np)
 
     if confidences is not None:
         label_texts = [
-            f"{name} {score:.2f} ({pos[0]:+.2f},{pos[1]:+.2f})m"
-            for name, score, pos in zip(class_names, confidences, positions)
+            f"{name} {score:.2f} "
+            f"({sum(p[0] for p in box) / len(box):+.2f},"
+            f"{sum(p[1] for p in box) / len(box):+.2f})m"
+            for name, score, box in zip(class_names, confidences, bounding_boxes)
         ]
 
     # Expose for external annotators (e.g. main.py draws these on the full
@@ -436,7 +439,7 @@ def object_detector(model, color_np, depth_np, project):
     print(f"{counter}th image is finished. total time: {elapsed:.3f} s")
     counter += 1    # analgous to frame_idx in the original code
 
-    return positions, class_names.tolist(), confidences.tolist()
+    return bounding_boxes, class_names.tolist(), confidences.tolist()
 
 
 def run_batch(input_dir):

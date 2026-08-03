@@ -288,13 +288,13 @@ def main() -> None:
             depth_crop = np.ascontiguousarray(depth_np[:, crop_x0:crop_x1])
 
             ts = time.time()
-            positions, class_names, confidences = object_detector(
+            bounding_boxes, class_names, confidences = object_detector(
                 model, color_crop, depth_crop, project
             )
             elapsed = time.time() - ts
 
             record = streaming.build_record(
-                ts, elapsed, positions, class_names, confidences
+                ts, elapsed, bounding_boxes, class_names, confidences
             )
             f.write(json.dumps(record) + "\n")
             streaming.publish_detections(record)
@@ -308,7 +308,7 @@ def main() -> None:
             _publish_frame(frame_to_publish)
 
             print(
-                f"[{time.strftime('%H:%M:%S')}] {len(positions)} objs in {elapsed:.2f}s",
+                f"[{time.strftime('%H:%M:%S')}] {len(bounding_boxes)} objs in {elapsed:.2f}s",
                 flush=True,
             )
     finally:

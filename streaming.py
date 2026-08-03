@@ -23,20 +23,25 @@ _fps = 30
 
 # Bump when the detection record layout changes incompatibly. Consumers can
 # read record["schema_version"] to detect a producer/consumer mismatch.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
-def build_record(timestamp, elapsed_s, positions, class_names, confidences):
+def build_record(timestamp, elapsed_s, bounding_boxes, class_names, confidences):
     """Serialize one frame's detections into a JSON-ready dict.
 
-    positions / class_names / confidences are parallel arrays (same order,
-    one entry per kept detection).
+    bounding_boxes / class_names / confidences are parallel arrays (same order,
+    one entry per kept detection).  Each bounding box contains four projected
+    belt-plane points in clockwise order: top-left, top-right, bottom-right,
+    bottom-left.  Every point is ``[X, Y, Z]`` in metres.
     """
     return {
         "schema_version": SCHEMA_VERSION,
         "timestamp": float(timestamp),
         "elapsed_s": float(elapsed_s),
-        "positions": [[float(v) for v in p] for p in positions],
+        "bounding_boxes": [
+            [[float(v) for v in point] for point in box]
+            for box in bounding_boxes
+        ],
         "class_names": list(class_names),
         "confidences": [float(c) for c in confidences],
     }

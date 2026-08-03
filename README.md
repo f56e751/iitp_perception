@@ -142,10 +142,11 @@ python3 scripts/perception_client.py --url http://127.0.0.1:8080/detections/stre
 from perception_client import stream_detections   # 로봇 repo에 복사한 파일
 
 def on_record(rec):
-    for (X, Y, Z), cls, conf in zip(rec["positions"], rec["class_names"], rec["confidences"]):
+    for bbox, cls, conf in zip(rec["bounding_boxes"], rec["class_names"], rec["confidences"]):
         if conf < 0.3:
             continue
-        # TODO: 카메라좌표 → 로봇 베이스 좌표 변환 후 제어에 사용
+        # bbox = [top-left, top-right, bottom-right, bottom-left]
+        # 각 점은 belt-plane [X, Y, Z] 좌표(m)
         ...
 
 stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
@@ -156,7 +157,8 @@ stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 매 프레임 한 줄/한 객체(JSON). 평행 배열로 정렬 일치:
 - `schema_version` — 스키마 버전(정수). 포맷 변경 시 증가 → 소비자가 불일치 감지 (`streaming.SCHEMA_VERSION`)
 - `timestamp` (epoch s), `elapsed_s` (추론 시간)
-- `positions` — `[[X,Y,Z], ...]` 카메라 좌표계, m
+- `bounding_boxes` — 객체별 네 모서리 `[[TL],[TR],[BR],[BL]]`; 각 점은
+  belt-plane `[X,Y,Z]` 좌표(m)
 - `class_names` — `["metal"|"transparent"|"cardboard", ...]`
 - `confidences` — `[float, ...]` 객체별 top score
 

@@ -17,26 +17,35 @@ class TestBuildRecord(unittest.TestCase):
         rec = streaming.build_record(
             timestamp=1.5,
             elapsed_s=0.08,
-            positions=[(0.1, 0.2, 0.3), (1, 2, 3)],
+            bounding_boxes=[
+                [(0.0, 0.1, 0.0), (0.2, 0.1, 0.0),
+                 (0.2, 0.3, 0.0), (0.0, 0.3, 0.0)],
+                [(1, 2, 0), (3, 2, 0), (3, 4, 0), (1, 4, 0)],
+            ],
             class_names=["metal", "transparent"],
             confidences=[0.9, 0.5],
         )
         self.assertEqual(
             set(rec),
             {"schema_version", "timestamp", "elapsed_s",
-             "positions", "class_names", "confidences"},
+             "bounding_boxes", "class_names", "confidences"},
         )
         self.assertEqual(rec["schema_version"], streaming.SCHEMA_VERSION)
-        self.assertEqual(rec["positions"][0], [0.1, 0.2, 0.3])
+        self.assertEqual(
+            rec["bounding_boxes"][0],
+            [[0.0, 0.1, 0.0], [0.2, 0.1, 0.0],
+             [0.2, 0.3, 0.0], [0.0, 0.3, 0.0]],
+        )
         self.assertEqual(rec["class_names"], ["metal", "transparent"])
         self.assertEqual(rec["confidences"], [0.9, 0.5])
         # JSON-serializable end to end.
         self.assertEqual(json.loads(json.dumps(rec)), rec)
 
     def test_parallel_arrays_aligned(self):
-        rec = streaming.build_record(0, 0, [(1, 1, 1)], ["metal"], [0.7])
-        self.assertEqual(len(rec["positions"]), len(rec["class_names"]))
-        self.assertEqual(len(rec["positions"]), len(rec["confidences"]))
+        box = [[(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)]]
+        rec = streaming.build_record(0, 0, box, ["metal"], [0.7])
+        self.assertEqual(len(rec["bounding_boxes"]), len(rec["class_names"]))
+        self.assertEqual(len(rec["bounding_boxes"]), len(rec["confidences"]))
 
 
 class TestServerEndpoints(unittest.TestCase):
@@ -53,7 +62,7 @@ class TestServerEndpoints(unittest.TestCase):
         return f"http://127.0.0.1:{self.port}{path}"
 
     def test_latest_returns_published_record(self):
-        rec = streaming.build_record(2.0, 0.05, [(1, 2, 3)], ["metal"], [0.8])
+        rec = streaming.build_record(2.0, 0.05, [[(1, 2, 0)] * 4], ["metal"], [0.8])
         streaming.publish_detections(rec)
         with urllib.request.urlopen(self._url("/detections"), timeout=2) as r:
             got = json.loads(r.read().decode())
@@ -62,7 +71,7 @@ class TestServerEndpoints(unittest.TestCase):
     def test_stream_pushes_new_record(self):
         # Unique record so we can distinguish it from any stale frame the
         # stream may emit first (handler pushes latest-on-seq-change).
-        rec = streaming.build_record(3.0, 0.04, [(4, 5, 6)], ["transparent"], [0.6])
+        rec = streaming.build_record(3.0, 0.04, [[(4, 5, 0)] * 4], ["transparent"], [0.6])
         with urllib.request.urlopen(self._url("/detections/stream"), timeout=3) as r:
             streaming.publish_detections(rec)
             seen = []
@@ -87,7 +96,7 @@ class TestServerEndpoints(unittest.TestCase):
         class _Stop(Exception):
             pass
 
-        rec = streaming.build_record(9.0, 0.01, [(7, 8, 9)], ["cardboard"], [0.7])
+        rec = streaming.build_record(9.0, 0.01, [[(7, 8, 0)] * 4], ["cardboard"], [0.7])
         got = []
 
         def on_record(r):

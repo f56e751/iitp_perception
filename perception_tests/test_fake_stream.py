@@ -13,12 +13,13 @@ class TestRandomDetections(unittest.TestCase):
     def test_arrays_aligned_and_in_range(self):
         rng = random.Random(0)
         for _ in range(50):
-            positions, class_names, confidences = fake_stream.random_detections(3, rng)
-            self.assertEqual(len(positions), len(class_names))
-            self.assertEqual(len(positions), len(confidences))
-            self.assertLessEqual(len(positions), 3)
-            for p in positions:
-                self.assertEqual(len(p), 3)
+            boxes, class_names, confidences = fake_stream.random_detections(3, rng)
+            self.assertEqual(len(boxes), len(class_names))
+            self.assertEqual(len(boxes), len(confidences))
+            self.assertLessEqual(len(boxes), 3)
+            for box in boxes:
+                self.assertEqual(len(box), 4)
+                self.assertTrue(all(len(point) == 3 for point in box))
             for c in class_names:
                 self.assertIn(c, fake_stream.CLASSES)
             for conf in confidences:
@@ -26,11 +27,11 @@ class TestRandomDetections(unittest.TestCase):
 
     def test_record_is_buildable(self):
         rng = random.Random(1)
-        pos, cls, conf = fake_stream.random_detections(3, rng)
+        boxes, cls, conf = fake_stream.random_detections(3, rng)
         import streaming
-        rec = streaming.build_record(1.0, 0.05, pos, cls, conf)
+        rec = streaming.build_record(1.0, 0.05, boxes, cls, conf)
         self.assertEqual(rec["schema_version"], streaming.SCHEMA_VERSION)
-        self.assertEqual(len(rec["positions"]), len(rec["confidences"]))
+        self.assertEqual(len(rec["bounding_boxes"]), len(rec["confidences"]))
 
 
 if __name__ == "__main__":

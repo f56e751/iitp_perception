@@ -33,7 +33,7 @@ def main() -> int:
                 continue
             rec = json.loads(line)
             # Replace this with your robot-side handling (e.g. publish poses).
-            n = len(rec.get("positions", []))
+            n = len(rec.get("bounding_boxes", []))
             print(
                 f"[{rec.get('timestamp', 0):.3f}] {n} objs "
                 f"classes={rec.get('class_names')} "

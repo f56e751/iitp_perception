@@ -21,19 +21,23 @@ CLASSES = ["transparent", "metal", "cardboard"]
 
 
 def random_detections(max_objects, rng=random):
-    """Return (positions, class_names, confidences) parallel arrays of equal length."""
+    """Return (bounding_boxes, class_names, confidences) parallel arrays."""
     n = rng.randint(0, max_objects)
-    positions = [
-        (
-            round(rng.uniform(-0.5, 0.5), 3),
-            round(rng.uniform(-0.4, 0.4), 3),
-            round(rng.uniform(0.3, 2.0), 3),
-        )
-        for _ in range(n)
-    ]
+    bounding_boxes = []
+    for _ in range(n):
+        cx = rng.uniform(-0.5, 0.5)
+        cy = rng.uniform(-0.4, 0.4)
+        half_w = rng.uniform(0.02, 0.08)
+        half_h = rng.uniform(0.02, 0.12)
+        bounding_boxes.append([
+            (round(cx - half_w, 3), round(cy - half_h, 3), 0.0),
+            (round(cx + half_w, 3), round(cy - half_h, 3), 0.0),
+            (round(cx + half_w, 3), round(cy + half_h, 3), 0.0),
+            (round(cx - half_w, 3), round(cy + half_h, 3), 0.0),
+        ])
     class_names = [rng.choice(CLASSES) for _ in range(n)]
     confidences = [round(rng.uniform(0.2, 0.95), 3) for _ in range(n)]
-    return positions, class_names, confidences
+    return bounding_boxes, class_names, confidences
 
 
 def parse_args():
@@ -56,9 +60,9 @@ def main() -> int:
     )
     try:
         while True:
-            positions, class_names, confidences = random_detections(args.max_objects, rng)
+            bounding_boxes, class_names, confidences = random_detections(args.max_objects, rng)
             record = streaming.build_record(
-                time.time(), args.interval, positions, class_names, confidences
+                time.time(), args.interval, bounding_boxes, class_names, confidences
             )
             streaming.publish_detections(record)
             print(f"published {len(class_names)} objs: {class_names}", flush=True)
