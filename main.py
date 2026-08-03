@@ -24,6 +24,7 @@ import torch
 
 import iitp_object_detector
 import streaming
+from capture_timing import capture_age_seconds
 from grounding_dino.groundingdino.util.inference import load_model
 from iitp_object_detector import object_detector
 
@@ -203,6 +204,19 @@ def main() -> None:
     cfg.enable_stream(rs.stream.depth, COLOR_W, COLOR_H, rs.format.z16, FPS)
     profile = pipeline.start(cfg)
 
+    global_time_sensors = 0
+    for sensor in profile.get_device().query_sensors():
+        try:
+            if sensor.supports(rs.option.global_time_enabled):
+                sensor.set_option(rs.option.global_time_enabled, 1.0)
+                global_time_sensors += 1
+        except RuntimeError as exc:
+            print(f"warning: could not enable RealSense global time: {exc}", flush=True)
+    print(
+        f"RealSense global time enabled on {global_time_sensors} sensor(s)",
+        flush=True,
+    )
+
     color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
     intr = color_profile.get_intrinsics()
     fx, fy, cx, cy = intr.fx, intr.fy, intr.ppx, intr.ppy
@@ -272,6 +286,7 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _handler)
 
     f = JSONL_PATH.open("a", buffering=1)
+    capture_timestamp_warned = False
     try:
         while not stop["flag"]:
             frames = pipeline.wait_for_frames()
@@ -288,13 +303,38 @@ def main() -> None:
             depth_crop = np.ascontiguousarray(depth_np[:, crop_x0:crop_x1])
 
             ts = time.time()
+            timestamp_domain = color.get_frame_timestamp_domain()
+            frame_timestamp_ms = color.get_timestamp()
+            capture_age = capture_age_seconds(
+                ts,
+                frame_timestamp_ms,
+                is_global_time=(timestamp_domain == rs.timestamp_domain.global_time),
+            )
+            capture_timestamp = (
+                frame_timestamp_ms / 1000.0 if capture_age is not None else None
+            )
+            if capture_age is None and not capture_timestamp_warned:
+                print(
+                    "warning: unusable RealSense global timestamp; "
+                    "consumers will fall back to estimated frame age "
+                    f"(domain={timestamp_domain}, timestamp_ms={frame_timestamp_ms:.3f})",
+                    flush=True,
+                )
+                capture_timestamp_warned = True
             bounding_boxes, class_names, confidences = object_detector(
                 model, color_crop, depth_crop, project
             )
             elapsed = time.time() - ts
 
             record = streaming.build_record(
-                ts, elapsed, bounding_boxes, class_names, confidences
+                ts,
+                elapsed,
+                bounding_boxes,
+                class_names,
+                confidences,
+                capture_timestamp=capture_timestamp,
+                capture_age_s=capture_age,
+                capture_timestamp_domain=str(timestamp_domain),
             )
             f.write(json.dumps(record) + "\n")
             streaming.publish_detections(record)

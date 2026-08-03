@@ -29,7 +29,17 @@ _fps = 30
 SCHEMA_VERSION = 2
 
 
-def build_record(timestamp, elapsed_s, bounding_boxes, class_names, confidences):
+def build_record(
+    timestamp,
+    elapsed_s,
+    bounding_boxes,
+    class_names,
+    confidences,
+    *,
+    capture_timestamp=None,
+    capture_age_s=None,
+    capture_timestamp_domain=None,
+):
     """Serialize one frame's detections into a JSON-ready dict.
 
     bounding_boxes / class_names / confidences are parallel arrays (same order,
@@ -41,6 +51,11 @@ def build_record(timestamp, elapsed_s, bounding_boxes, class_names, confidences)
         "schema_version": SCHEMA_VERSION,
         "timestamp": float(timestamp),
         "elapsed_s": float(elapsed_s),
+        "capture_timestamp": (
+            None if capture_timestamp is None else float(capture_timestamp)
+        ),
+        "capture_age_s": None if capture_age_s is None else float(capture_age_s),
+        "capture_timestamp_domain": capture_timestamp_domain,
         "bounding_boxes": [
             [[float(v) for v in point] for point in box]
             for box in bounding_boxes

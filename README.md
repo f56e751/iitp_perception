@@ -172,6 +172,9 @@ NTP 방식으로 두 PC의 시계 오프셋과 RTT를 먼저 추정하고, 실�
 매 프레임 한 줄/한 객체(JSON). 평행 배열로 정렬 일치:
 - `schema_version` — 스키마 버전(정수). 포맷 변경 시 증가 → 소비자가 불일치 감지 (`streaming.SCHEMA_VERSION`)
 - `timestamp` (epoch s), `elapsed_s` (추론 시간)
+- `capture_timestamp` — RealSense global-time 프레임 시각(epoch s), 사용할 수 없으면 `null`
+- `capture_age_s` — 실제 프레임 시각부터 추론 시작까지의 시간(초). 센서/USB/align/crop 포함
+- `capture_timestamp_domain` — RealSense timestamp domain 진단 문자열
 - `bounding_boxes` — 객체별 네 모서리 `[[TL],[TR],[BR],[BL]]`; 각 점은
   belt-plane `[X,Y,Z]` 좌표(m)
 - `class_names` — `["metal"|"transparent"|"cardboard", ...]`

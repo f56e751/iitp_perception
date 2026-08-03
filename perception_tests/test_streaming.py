@@ -24,11 +24,15 @@ class TestBuildRecord(unittest.TestCase):
             ],
             class_names=["metal", "transparent"],
             confidences=[0.9, 0.5],
+            capture_timestamp=1.45,
+            capture_age_s=0.05,
+            capture_timestamp_domain="timestamp_domain.global_time",
         )
         self.assertEqual(
             set(rec),
             {"schema_version", "timestamp", "elapsed_s",
-             "bounding_boxes", "class_names", "confidences"},
+             "bounding_boxes", "class_names", "confidences",
+             "capture_timestamp", "capture_age_s", "capture_timestamp_domain"},
         )
         self.assertEqual(rec["schema_version"], streaming.SCHEMA_VERSION)
         self.assertEqual(
@@ -38,6 +42,11 @@ class TestBuildRecord(unittest.TestCase):
         )
         self.assertEqual(rec["class_names"], ["metal", "transparent"])
         self.assertEqual(rec["confidences"], [0.9, 0.5])
+        self.assertEqual(rec["capture_timestamp"], 1.45)
+        self.assertEqual(rec["capture_age_s"], 0.05)
+        self.assertEqual(
+            rec["capture_timestamp_domain"], "timestamp_domain.global_time"
+        )
         # JSON-serializable end to end.
         self.assertEqual(json.loads(json.dumps(rec)), rec)
 
