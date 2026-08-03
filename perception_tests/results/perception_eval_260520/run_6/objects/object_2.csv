@@ -1,0 +1,5 @@
+image,box_id,x1,y1,x2,y2,score_transparent,score_metal,score_cardboard,top_score,predicted_class
+000006.jpg,1,596.9,229.8,639.9,302.1,0.4835,0.0368,0.0404,0.4835,transparent
+000009.jpg,1,596.9,229.9,639.9,300.0,0.4042,0.0321,0.0535,0.4042,transparent
+000010.jpg,1,596.9,229.8,639.9,300.6,0.4611,0.0345,0.0419,0.4611,transparent
+000011.jpg,1,596.8,229.8,639.9,298.1,0.5604,0.0320,0.0373,0.5604,transparent

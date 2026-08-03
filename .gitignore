@@ -2,9 +2,15 @@
 checkpoint_best.pth
 data_iitp_2
 
+# local BERT text encoder (fetched from ModelScope; huggingface.co blocked here)
+bert-base-uncased
+
 # runtime outputs
 results_local
 tmp_results
+
+# per-installation calibration (snapshot + homography from calibrate_homography.py)
+calibration
 
 # build artifacts
 grounding_dino/build

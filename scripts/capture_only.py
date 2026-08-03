@@ -9,6 +9,7 @@ import argparse
 import signal
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 import cv2
@@ -21,7 +22,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "-o",
         "--output-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
         help="Frames go to <output-dir>/images/.",
     )
     p.add_argument(

@@ -194,7 +194,8 @@ STREAM_JPEG_QUALITY = 80   # 50~95, 낮을수록 대역폭↓ 화질↓
 ```bash
 cd /PublicSSD/iitp
 ./scripts/docker_capture.sh -i 1.0
-# 기본 출력: tmp_results/perception_eval_260520/images/000000.jpg, 000001.jpg, ...
+# 기본 출력: perception_tests/results/perception_eval_<오늘날짜YYMMDD>/images/000000.jpg, 000001.jpg, ...
+#   (예: 2026-05-22 → perception_tests/results/perception_eval_260522/)
 # 옵션: -i <초> 간격, -o <출력 폴더>
 # Ctrl+C 로 정상 종료
 ```
@@ -206,11 +207,12 @@ cd /PublicSSD/iitp
 ```bash
 docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
   --name iitp_eval chaehyeonsong/grounded_sam:latest \
-  bash -c "cd /mnt && python scripts/eval_detector.py -i tmp_results/perception_eval_260520"
+  bash -c "cd /mnt && python scripts/eval_detector.py -i perception_tests/results/perception_eval_260522"
 ```
-출력:
-- `tmp_results/perception_eval_260520/annotated/<원본이름>.jpg` — 박스가 그려진 이미지
-- `tmp_results/perception_eval_260520/scores.csv` — NMS 통과한 박스마다 한 줄,
+`-i` 기본값은 오늘 날짜 폴더 (`perception_tests/results/perception_eval_<YYMMDD>`) 이므로
+같은 날 캡처/평가하면 생략 가능. 출력:
+- `perception_tests/results/perception_eval_260522/annotated/<원본이름>.jpg` — 박스가 그려진 이미지
+- `perception_tests/results/perception_eval_260522/scores.csv` — NMS 통과한 박스마다 한 줄,
   컬럼: `image, box_id, x1, y1, x2, y2, score_transparent, score_metal,
   score_cardboard, top_score, predicted_class`
 
@@ -221,17 +223,17 @@ docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
 
 ## Tests
 
-`tests/` 에 stdlib `unittest` 기반 테스트가 있다. 별도 설치 없이 실행:
+`perception_tests/` 에 stdlib `unittest` 기반 테스트가 있다. 별도 설치 없이 실행:
 
 ```bash
 # 호스트: 순수 로직(grouping/tracking/analyze/corrections) 테스트가 돌고,
 # 엔진/eval 테스트는 torch가 없어 자동 skip 된다.
-python3 -m unittest discover -s tests
+python3 -m unittest discover -s perception_tests
 
 # 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): grounded_sam 컨테이너에서
 docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
   --name iitp_test chaehyeonsong/grounded_sam:latest \
-  bash -c "cd /mnt && python -m unittest discover -s tests"
+  bash -c "cd /mnt && python -m unittest discover -s perception_tests"
 ```
 
 | 테스트 파일 | 대상 | 실행 환경 |
@@ -246,4 +248,4 @@ docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
 | `test_eval_detector.py` | `class_spans`, `per_class_scores` | 컨테이너 (torch) |
 
 카메라/모델이 필요한 경로(`main.py` live, `eval_detector.main`)는 단위 테스트 대상이 아니라
-실제 실행(스모크)으로 확인한다. 새 기능은 먼저 `tests/`에 케이스를 추가(red)하고 구현(green)하는 식으로 관리.
+실제 실행(스모크)으로 확인한다. 새 기능은 먼저 `perception_tests/`에 케이스를 추가(red)하고 구현(green)하는 식으로 관리.

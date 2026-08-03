@@ -311,9 +311,13 @@ def transform_image(image) -> Tuple[np.array, torch.Tensor]:    # modification o
 
 counter = 0
 LAST_ANNOTATED = None  # latest annotated BGR frame; consumed by external streamers
-def object_detector(model, color_np, depth_np, camera_intrinsics):
-    global counter, LAST_ANNOTATED
+LAST_DETECTIONS = None  # latest sv.Detections in crop pixel coords; for external annotating
+LAST_LABELS = None  # latest per-detection label strings, aligned with LAST_DETECTIONS
+def object_detector(model, color_np, depth_np, project):
+    global counter, LAST_ANNOTATED, LAST_DETECTIONS, LAST_LABELS
     LAST_ANNOTATED = None
+    LAST_DETECTIONS = None
+    LAST_LABELS = None
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 # frame_names = sorted(frame_names)
 # for frame_idx in range(len(frame_names)):
@@ -391,9 +395,24 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
         mask=None,          # (M,H,W) <- masks after overlap removal
         class_id=class_ids     # (M,)
     )
-    if confidences is not None:
-        label_texts = [f"{name} {score:.2f}" for name, score in zip(class_names, confidences)]
 
+    # 2D -> 3D via the caller-supplied projection. Stays generic so main.py
+    # can pick the formula (pinhole + depth, pixel-ratio + assumed plane, ...).
+    positions = []
+    for input_box in input_boxes:
+        u, v = (input_box[0] + input_box[2]) / 2, (input_box[1] + input_box[3]) / 2
+        positions.append(project(u, v, depth_np))
+
+    if confidences is not None:
+        label_texts = [
+            f"{name} {score:.2f} ({pos[0]:+.2f},{pos[1]:+.2f})m"
+            for name, score, pos in zip(class_names, confidences, positions)
+        ]
+
+    # Expose for external annotators (e.g. main.py draws these on the full
+    # frame so labels can extend over the blurred side regions).
+    LAST_DETECTIONS = detections
+    LAST_LABELS = label_texts
     print(label_texts)
 
     img = image_source
@@ -401,7 +420,7 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
         raise FileNotFoundError(f"Failed to read image: {img_path}")
     mask_annotator = sv.MaskAnnotator(opacity=0.4)
     box_annotator  = sv.BoxAnnotator(thickness=2)
-    label_annotator = sv.LabelAnnotator(text_thickness=1, text_scale=1.0)
+    label_annotator = sv.LabelAnnotator(text_thickness=1, text_scale=0.5)
 
     annotated = img.copy()
     annotated = mask_annotator.annotate(scene=annotated, detections=detections)
@@ -417,17 +436,6 @@ def object_detector(model, color_np, depth_np, camera_intrinsics):
     print(f"{counter}th image is finished. total time: {elapsed:.3f} s")
     counter += 1    # analgous to frame_idx in the original code
 
-    # Changing 2D information to 3D
-    positions = []
-    for input_box in input_boxes:
-        u, v = (input_box[0] + input_box[2]) / 2, (input_box[1] + input_box[3]) / 2
-        depth = depth_np[int(v), int(u)] / 1000.0  # Assuming mm to m
-        if depth <= 0.1 or depth >= 5.0:
-            pass    # raise exception?
-
-        fx, fy, cx, cy = camera_intrinsics
-        X, Y, Z = (u - cx) / fx * depth, (v - cy) / fy * depth, depth
-        positions.append((X, Y, Z))
     return positions, class_names.tolist(), confidences.tolist()
 
 

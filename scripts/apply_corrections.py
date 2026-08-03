@@ -8,6 +8,9 @@ corrections.json schema:
 {
   "delete_tracks": [16, 18],
   "delete_frames": ["000040.jpg"],
+  "delete_detections": [
+    {"frame": "000015.jpg", "box_id": 0, "reason": "..."}
+  ],
   "reassignments": [
     {"frame": "000039.jpg", "box_id": 0, "to_track": 19, "reason": "..."}
   ],
@@ -28,6 +31,7 @@ import math
 import re
 import sys
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import cv2
@@ -42,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "-i", "--input-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
     )
     p.add_argument(
         "--corrections",
@@ -141,6 +145,12 @@ def main() -> int:
     for key in list(assignments.keys()):
         image, _ = key
         if image in deleted_frames:
+            del assignments[key]
+
+    # Apply per-detection deletions (single bogus detections within a track).
+    for d in corrections.get("delete_detections", []):
+        key = (d["frame"], str(d["box_id"]))
+        if key in assignments:
             del assignments[key]
 
     # Apply per-detection reassignments.

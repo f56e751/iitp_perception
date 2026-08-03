@@ -19,6 +19,7 @@ import bisect
 import csv
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 # Allow `python perception_eval/eval_detector.py` from the project root:
@@ -59,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "-i",
         "--input-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
         help="Folder containing images/ subdirectory.",
     )
     return p.parse_args()

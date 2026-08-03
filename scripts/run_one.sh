@@ -9,7 +9,9 @@ cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.."
 
 RUN_NAME=${1:?"usage: $0 <run_name> [duration_seconds]"}
 DURATION=${2:-20}
-ROOT=tmp_results/perception_eval_260520/$RUN_NAME
+# Date folder defaults to today; override with DATE_DIR=perception_eval_YYMMDD
+DATE_DIR=${DATE_DIR:-perception_eval_$(date +%y%m%d)}
+ROOT=perception_tests/results/$DATE_DIR/$RUN_NAME
 
 echo "=== capture ==="
 ./scripts/docker_capture.sh -o "$ROOT" --duration "$DURATION"
