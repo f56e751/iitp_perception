@@ -1,0 +1,45 @@
+{
+  "delete_tracks": [16, 18],
+
+  "merge_tracks": [
+    {
+      "target": 15,
+      "sources": [20],
+      "detection_failures": ["000034.jpg"],
+      "reason": "Same physical object as T15; T20 is the same object after a 1-frame detection miss in frame 34."
+    }
+  ],
+
+  "reassignments": [
+    {
+      "frame": "000039.jpg",
+      "box_id": 0,
+      "to_track": 19,
+      "reason": "User noted: clear bottle near top is T19's exit frame; tracker greedy-matched it to T17 (the metal can, which had already exited at frame 37)."
+    },
+    {
+      "frame": "000040.jpg",
+      "box_id": 1,
+      "to_track": 21,
+      "reason": "Big bottle T21 continuing upward (cent 357,77 from T21's frame 39 at 355,163). Was mislabeled T19 because T19's trajectory ended in frame 39."
+    },
+    {
+      "frame": "000041.jpg",
+      "box_id": 1,
+      "to_track": 21,
+      "reason": "Big bottle T21 exiting at top (cent 372,19). Same chain as previous."
+    },
+    {
+      "frame": "000041.jpg",
+      "box_id": 0,
+      "to_track": 22,
+      "reason": "Green plastic T22 continuing upward (cent 320,107 from T22's frame 40 at 317,194). Was mislabeled T21 because T21's slot opened up after T21 was misassigned to the wrong x-column."
+    },
+    {
+      "frame": "000042.jpg",
+      "box_id": 0,
+      "to_track": 22,
+      "reason": "Green plastic T22 exiting at top (cent 323,28). Same chain as previous."
+    }
+  ]
+}

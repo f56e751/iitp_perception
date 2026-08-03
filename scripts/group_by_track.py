@@ -17,6 +17,7 @@ import csv
 import math
 import sys
 from collections import Counter
+from datetime import date
 from pathlib import Path
 
 import cv2
@@ -41,20 +42,22 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "-i",
         "--input-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
         help="Folder containing scores.csv.",
     )
     p.add_argument(
         "--distance-threshold",
         type=float,
         default=100.0,
-        help="Max centroid distance (px) for a new detection to be appended to an existing track.",
+        help="Max centroid distance (px), measured against the velocity-predicted next position, "
+             "for a new detection to be appended to an existing track.",
     )
     p.add_argument(
         "--max-missed-frames",
         type=int,
         default=2,
-        help="Close a track after this many consecutive frames without a match.",
+        help="Close a track once it has been idle for more than this many consecutive frames "
+             "(checked before each frame's matching, so a closed track cannot grab later detections).",
     )
     p.add_argument(
         "--min-motion",
@@ -77,6 +80,31 @@ def parse_args() -> argparse.Namespace:
             "detection to extend a track. Filters out new objects appearing "
             "near an exiting track's edge position."
         ),
+    )
+    p.add_argument(
+        "--size-weight",
+        type=float,
+        default=0.3,
+        help="Weight on bbox-diagonal change in the match cost. Distance threshold is still "
+             "applied to raw predicted-vs-actual centroid distance; size weighting only ranks "
+             "the surviving candidates so that wildly-different-shaped detections lose to "
+             "similar-shaped ones. Set 0 to revert to pure distance ranking.",
+    )
+    p.add_argument(
+        "--rejoin-gap",
+        type=int,
+        default=4,
+        help="Max frame gap for the post-pass re-association step that merges a closed track "
+             "with a later-opened track whose first detection lands near the closed track's "
+             "velocity-extrapolated position. Set 0 to disable.",
+    )
+    p.add_argument(
+        "--rejoin-size-delta",
+        type=float,
+        default=80.0,
+        help="Maximum allowed bbox-diagonal difference (px) when re-associating a closed "
+             "track with a later track. Prevents stitching small cans onto large cardboard "
+             "boxes just because they happened to pass through the same pixel.",
     )
     p.add_argument(
         "--no-annotate",
@@ -112,6 +140,32 @@ def centroid(row):
 
 def distance(p, q):
     return math.hypot(p[0] - q[0], p[1] - q[1])
+
+
+def bbox_diag(row):
+    x1, y1 = float(row["x1"]), float(row["y1"])
+    x2, y2 = float(row["x2"]), float(row["y2"])
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+def predict_centroid(tr, fidx):
+    """Extrapolate a track's expected centroid at frame fidx from its last
+    two actually-detected centroids. Falls back to the last centroid when
+    velocity cannot be estimated. Handles non-consecutive frame indices
+    (gaps inside the track) by dividing the centroid delta by the frame
+    delta before extrapolating."""
+    cs = tr["centroids"]
+    fs = tr["frame_idxs"]
+    if len(cs) < 2:
+        return cs[-1]
+    c1, c2 = cs[-2], cs[-1]
+    f1, f2 = fs[-2], fs[-1]
+    if f2 == f1:
+        return c2
+    vx = (c2[0] - c1[0]) / (f2 - f1)
+    vy = (c2[1] - c1[1]) / (f2 - f1)
+    gap = fidx - f2
+    return (c2[0] + vx * gap, c2[1] + vy * gap)
 
 
 def render_annotated_tracks(input_dir: Path, by_frame: dict, frame_names: list) -> None:
@@ -171,7 +225,7 @@ def main() -> int:
     frame_names = sorted(by_frame.keys())
     frame_index = {name: i for i, name in enumerate(frame_names)}
 
-    # active = list of dicts: {id, rows, last_centroid, last_frame_idx}
+    # active = list of dicts: {id, rows, centroids, frame_idxs, last_centroid, last_frame_idx}
     active: list[dict] = []
     closed: list[dict] = []
     next_id = 0
@@ -180,28 +234,50 @@ def main() -> int:
         fidx = frame_index[fname]
         detections = by_frame[fname]
         det_centroids = [centroid(d) for d in detections]
+        det_diags = [bbox_diag(d) for d in detections]
 
-        # Build all (track, det) distance pairs within threshold AND consistent with the
-        # configured motion direction; greedily pick shortest.
+        # Close idle tracks BEFORE this frame's matching, so a track that has
+        # already exceeded max_missed_frames cannot "wake up" and absorb a
+        # later detection (which was a source of class-flip cross-matches
+        # in the previous version).
+        still_active = []
+        for tr in active:
+            if fidx - tr["last_frame_idx"] > args.max_missed_frames:
+                closed.append(tr)
+            else:
+                still_active.append(tr)
+        active = still_active
+
+        # For each (track, det) pair within the distance threshold of the
+        # track's *predicted* next centroid, build a cost = distance + size
+        # weight * |bbox-diagonal delta|. Distance threshold still gates;
+        # size weighting only re-ranks survivors.
         candidates = []
         for ti, tr in enumerate(active):
+            predicted = predict_centroid(tr, fidx)
+            last_diag = bbox_diag(tr["rows"][-1])
             for di, dc in enumerate(det_centroids):
                 if not is_ahead(
-                    tr["last_centroid"], dc, args.motion_direction, args.min_progress
+                    predicted, dc, args.motion_direction, args.min_progress
                 ):
                     continue
-                d = distance(tr["last_centroid"], dc)
-                if d <= args.distance_threshold:
-                    candidates.append((d, ti, di))
+                d = distance(predicted, dc)
+                if d > args.distance_threshold:
+                    continue
+                size_delta = abs(det_diags[di] - last_diag)
+                cost = d + args.size_weight * size_delta
+                candidates.append((cost, ti, di))
         candidates.sort()
 
         matched_tracks: set[int] = set()
         matched_dets: set[int] = set()
-        for d, ti, di in candidates:
+        for _cost, ti, di in candidates:
             if ti in matched_tracks or di in matched_dets:
                 continue
             tr = active[ti]
             tr["rows"].append(detections[di])
+            tr["centroids"].append(det_centroids[di])
+            tr["frame_idxs"].append(fidx)
             tr["last_centroid"] = det_centroids[di]
             tr["last_frame_idx"] = fidx
             detections[di]["_track_id"] = tr["id"]
@@ -217,23 +293,68 @@ def main() -> int:
                 {
                     "id": next_id,
                     "rows": [det],
+                    "centroids": [det_centroids[di]],
+                    "frame_idxs": [fidx],
                     "last_centroid": det_centroids[di],
                     "last_frame_idx": fidx,
                 }
             )
             next_id += 1
 
-        # Close any active track that's been idle too long.
-        still_active = []
-        for tr in active:
-            if fidx - tr["last_frame_idx"] > args.max_missed_frames:
-                closed.append(tr)
-            else:
-                still_active.append(tr)
-        active = still_active
-
     # Anything still active at the end closes naturally.
     closed.extend(active)
+
+    # Post-pass re-association. For each track (in time order), look for an
+    # earlier closed track whose velocity-extrapolated position at this
+    # track's first frame lands within --distance-threshold and whose last
+    # bbox is similar in size to this track's first bbox. If so, merge this
+    # track into the earlier one — this stitches splits caused by 1-2 missed
+    # detections in the middle of an object's transit.
+    if args.rejoin_gap > 0:
+        closed.sort(key=lambda t: t["frame_idxs"][0])
+        merged_into: dict[int, int] = {}
+        for j_idx in range(len(closed)):
+            later = closed[j_idx]
+            if later["id"] in merged_into:
+                continue
+            later_first_fidx = later["frame_idxs"][0]
+            later_first_centroid = later["centroids"][0]
+            later_first_diag = bbox_diag(later["rows"][0])
+            best = None
+            for i_idx in range(j_idx):
+                earlier = closed[i_idx]
+                # Follow merge chain: anything merged earlier must be looked
+                # up by its root.
+                root_id = earlier["id"]
+                while root_id in merged_into:
+                    root_id = merged_into[root_id]
+                root = next(t for t in closed if t["id"] == root_id)
+                gap = later_first_fidx - root["last_frame_idx"]
+                if gap < 1 or gap > args.rejoin_gap:
+                    continue
+                predicted = predict_centroid(root, later_first_fidx)
+                d = distance(predicted, later_first_centroid)
+                if d > args.distance_threshold:
+                    continue
+                size_delta = abs(later_first_diag - bbox_diag(root["rows"][-1]))
+                if size_delta > args.rejoin_size_delta:
+                    continue
+                cost = d + args.size_weight * size_delta
+                if best is None or cost < best[0]:
+                    best = (cost, root)
+            if best is not None:
+                _, root = best
+                root["rows"].extend(later["rows"])
+                root["centroids"].extend(later["centroids"])
+                root["frame_idxs"].extend(later["frame_idxs"])
+                root["last_centroid"] = later["centroids"][-1]
+                root["last_frame_idx"] = later["frame_idxs"][-1]
+                for r in later["rows"]:
+                    r["_track_id"] = root["id"]
+                merged_into[later["id"]] = root["id"]
+
+        closed = [tr for tr in closed if tr["id"] not in merged_into]
+
     closed.sort(key=lambda t: t["id"])
 
     # Output.

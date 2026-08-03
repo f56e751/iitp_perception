@@ -17,6 +17,7 @@ import argparse
 import csv
 import json
 from collections import Counter, defaultdict
+from datetime import date
 from pathlib import Path
 
 
@@ -27,7 +28,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "-i", "--input-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
     )
     return p.parse_args()
 

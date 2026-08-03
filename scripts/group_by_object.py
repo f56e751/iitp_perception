@@ -14,6 +14,7 @@ Output layout (under --input-dir):
 import argparse
 import csv
 import sys
+from datetime import date
 from pathlib import Path
 
 
@@ -38,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "-i",
         "--input-dir",
-        default="tmp_results/perception_eval_260520",
+        default=f"perception_tests/results/perception_eval_{date.today():%y%m%d}",
         help="Folder containing scores.csv.",
     )
     p.add_argument(

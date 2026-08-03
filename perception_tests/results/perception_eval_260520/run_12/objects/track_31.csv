@@ -1,0 +1,2 @@
+track_id,image,box_id,x1,y1,x2,y2,score_transparent,score_metal,score_cardboard,top_score,predicted_class
+31,000059.jpg,3,307.6,418.4,365.7,479.7,0.5455,0.1090,0.0343,0.5455,transparent

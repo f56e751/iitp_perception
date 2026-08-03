@@ -31,7 +31,17 @@ dn_bbox_coef = 1.0
 embed_init_tgt = True
 dn_labelbook_size = 2000
 max_text_len = 256
-text_encoder_type = "bert-base-uncased"
+import os as _os
+# Load the BERT text encoder from a local folder when present (huggingface.co is
+# blocked on this host; weights were fetched from ModelScope into ./bert-base-uncased
+# at the repo root). Falls back to the HF hub id otherwise. __file__ is unreliable
+# here because SLConfig execs this config from a temp copy, so resolve against the
+# container mount and the current working directory instead.
+_bert_candidates = [
+    "/mnt/bert-base-uncased",                                # docker_local.sh mounts repo at /mnt
+    _os.path.join(_os.getcwd(), "bert-base-uncased"),        # repo root when run in-place
+]
+text_encoder_type = next((_p for _p in _bert_candidates if _os.path.isdir(_p)), "bert-base-uncased")
 use_text_enhancer = True
 use_fusion_layer = True
 use_checkpoint = True

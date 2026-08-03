@@ -1,0 +1,24 @@
+{
+  "delete_frames": ["000040.jpg"],
+
+  "merge_tracks": [
+    {
+      "target": 12,
+      "sources": [13],
+      "detection_failures": ["000022.jpg", "000023.jpg"],
+      "reason": "Same object across frames 20-24; model missed it in 22 and 23, then re-acquired near top in frame 24 as a new track."
+    },
+    {
+      "target": 15,
+      "sources": [19],
+      "detection_failures": ["000031.jpg"],
+      "reason": "Same object across frames 28-33; missed in frame 31."
+    },
+    {
+      "target": 23,
+      "sources": [27],
+      "detection_failures": ["000042.jpg", "000045.jpg"],
+      "reason": "Same object across frames 42-46; missed in 42 and 45. T23 captured 43-44, T27 captured 46."
+    }
+  ]
+}
