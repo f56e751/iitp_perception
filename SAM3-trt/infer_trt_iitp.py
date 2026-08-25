@@ -3,7 +3,10 @@ import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit  # noqa: F401
     
-from transformers.models.sam3 import Sam3Processor
+try:
+    from transformers.models.sam3 import Sam3Processor
+except ImportError:  # only the ONNX-export CLI at the bottom needs it
+    Sam3Processor = None
 from PIL import Image
 import numpy as np
 import time

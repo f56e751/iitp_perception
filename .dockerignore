@@ -1,0 +1,12 @@
+# Dockerfile.local only pip-installs; everything the pipeline needs is
+# bind-mounted at run time by docker_local.sh. Keep the build context tiny.
+.git
+weights
+output
+results_local
+tmp_results
+calibration
+bert-base-uncased
+checkpoint_best.pth
+grounding_dino/build
+**/__pycache__

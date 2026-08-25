@@ -1,5 +1,9 @@
 #!/bin/bash
-# Run grounded_sam container with RealSense USB passthrough + local capture script.
+# Run the live pipeline (RealSense USB passthrough) in the iitp_local image.
+# The image carries both backends; arguments are forwarded to main.py, e.g.
+#   ./docker_local.sh                  SAM3 TensorRT (main.py's default)
+#   ./docker_local.sh --backend dino   GroundingDINO
+#   ./docker_local.sh --port 8081
 # --privileged + /dev mount is the simplest way to expose USB devices.
 
 # Persistent HuggingFace cache so bert-base-uncased (GroundingDINO text encoder)
@@ -23,4 +27,4 @@ docker run "${tty_flags[@]}" --rm \
   -e TRANSFORMERS_OFFLINE=1 \
   --name iitp_local \
   iitp_local:latest \
-  bash -c "cd /mnt && python main.py --backend dino"
+  bash -c "cd /mnt && exec python main.py $*"

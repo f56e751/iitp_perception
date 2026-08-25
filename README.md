@@ -56,7 +56,7 @@ docker rm iitp
 
 - **`main.py`** — 프로덕션 진입점. 카메라 입력 → 모델 추론 → 결과를 `results_local/detections.jsonl`에
   기록 + 포트 8080 MJPEG 스트림 송출. 이것만 한다. 검출기는 `--backend`로 고른다
-  (`sam3` 기본 / `dino`). 실행은 `run_sam3_local.sh` 또는 `docker_local.sh`(아래 "Local capture" 섹션).
+  (`sam3` 기본 / `dino`). 실행은 `docker_local.sh`(아래 "Local capture" 섹션).
 - **`sam3_detector.py`** — SAM3 TensorRT 백엔드 어댑터. `SAM3-trt/` 런타임을 감싸서
   `object_detector`와 **같은** `(bounding_boxes, class_names, confidences)`를 돌려준다.
   tensorrt/pycuda import는 지연 로딩이라 이 모듈 자체는 어디서나 import 가능.
@@ -94,31 +94,23 @@ bounding box를 쓴다. 그래서 박스가 물체 윤곽에 더 붙는다. 프�
   engine 3개) + `RuntimeSegmenter`(카테고리 충돌 해소 · NMS · 인스턴스화)
 - `sam3_detector.py` — 위 런타임을 이 repo의 검출 계약으로 변환하는 얇은 어댑터
 - `download_sam3_onnx.sh` / `wrap_sam3_trt.sh` — ONNX 내려받기 / TensorRT engine 빌드
-- `run_sam3_local.sh` — 카메라 + SAM3 + :8080 실행 런처 (conda env를 USB 패스스루 컨테이너에 마운트)
+- `Dockerfile.local` — 두 백엔드를 모두 담은 `iitp_local:latest` 이미지 (TensorRT · pycuda 추가)
 
 ### 사전 준비 (최초 1회)
 
-**1) 추론 환경.** TensorRT 런타임은 grounded_sam 컨테이너(torch 2.3 / CUDA 12.1)와 공존하기
-어려워서 호스트에 별도 conda env를 둔다. 실행은 그 env를 `iitp_local` 컨테이너에
-bind-mount해서 한다 — 이 호스트에는 librealsense udev 규칙이 없고 카메라 USB 노드가
-root 소유(`crw-rw-r-- root root`)라, 호스트에서 바로 열면 `No device connected`가 난다.
-컨테이너는 오직 USB 패스스루 용도이고 파이썬/모델은 전부 conda env 것을 쓴다.
+**1) 추론 환경.** 별도 env 없이 기존 `iitp_local` 이미지 하나에 두 백엔드가 다 들어간다
+(`Dockerfile.local`이 베이스 grounded_sam 위에 TensorRT · pycuda · pyrealsense2를 얹는다).
+카메라도 이 컨테이너로 잡는다 — 호스트에는 librealsense udev 규칙이 없고 USB 노드가
+root 소유(`crw-rw-r-- root root`)라 호스트에서 바로 열면 `No device connected`가 난다.
 
 ```bash
-# miniforge (이미 있으면 생략)
-curl -L -o mf.sh https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-Linux-x86_64.sh
-bash mf.sh -b -p /PublicSSD/iitp/sam3_env/miniforge3
-/PublicSSD/iitp/sam3_env/miniforge3/bin/conda create -y -n sam3 python=3.11
-
-PIP=/PublicSSD/iitp/sam3_env/miniforge3/envs/sam3/bin/pip
-$PIP install "numpy<2.3" opencv-python-headless pillow tokenizers supervision pyrealsense2
-$PIP install torch --index-url https://download.pytorch.org/whl/cpu   # SAM3-trt import용, 추론엔 미사용
-$PIP install transformers
-# 드라이버가 CUDA 12.x면 반드시 cu12 빌드. 그냥 `pip install tensorrt`를 쓰면
-# CUDA 13 빌드(tensorrt_cu13)가 깔려 engine 생성이 실패한다.
-$PIP install "tensorrt-cu12<11"
-CUDA_HOME=/usr/local/cuda-12.4 PATH=/usr/local/cuda-12.4/bin:$PATH $PIP install pycuda
+cd /PublicSSD/iitp/iitp_perception
+docker build -f Dockerfile.local -t iitp_local:latest .
 ```
+
+TensorRT는 반드시 **cu12** 빌드여야 한다. 그냥 `pip install tensorrt`를 쓰면 CUDA 13
+빌드(`tensorrt_cu13`)가 깔려 CUDA 12.x 드라이버에서 로드되지 않는다. 버전을 고정한 이유는
+engine이 직렬화한 TensorRT 버전에 묶이기 때문 — 올릴 때는 `wrap_sam3_trt.sh`도 같이 다시 돌린다.
 
 **2) ONNX 다운로드 (~4.2 GB)** — `weights/`는 gitignore 대상이라 clone 후 한 번 받아야 한다.
 
@@ -131,7 +123,9 @@ bash download_sam3_onnx.sh runtime
 머신마다 다시 만들어야 한다.
 
 ```bash
-PATH=/PublicSSD/iitp/sam3_env/miniforge3/envs/sam3/bin:$PATH bash wrap_sam3_trt.sh
+cd /PublicSSD/iitp/iitp_perception
+docker run -i --rm --gpus all --ipc=host -v "$PWD":/mnt -w /mnt \
+  iitp_local:latest bash wrap_sam3_trt.sh
 ```
 
 산출물:
@@ -149,12 +143,12 @@ weights/usls/tokenizer.json
 
 ```bash
 cd /PublicSSD/iitp/iitp_perception
-./run_sam3_local.sh
-# 옵션은 그대로 전달된다: ./run_sam3_local.sh --port 8081
+./docker_local.sh
+# 인자는 main.py로 그대로 전달된다: ./docker_local.sh --port 8081
 ```
 - engine 로드(컨테이너 기동 포함 ~10초) 후 `streams ready on :8080 ...` 이 뜨면 준비 완료
 - 중단: `Ctrl+C`
-- GroundingDINO로 되돌리려면 기존 경로 그대로: `./docker_local.sh`
+- GroundingDINO로 되돌리려면: `./docker_local.sh --backend dino`
 
 ### 튜닝
 
@@ -177,11 +171,10 @@ cd /PublicSSD/iitp/iitp_perception
 RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 왕복 없이 바로 SAM 추론을 돌리고 바운딩박스가 그려진 영상을 다른 컴퓨터(로봇 PC 등)의 브라우저로 실시간 송출하는 모드.
 
 ### 구성 파일
-- `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2`만 얹은 파생 이미지 (`iitp_local:latest`)
+- `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2` · TensorRT · pycuda를 얹은 파생 이미지 (`iitp_local:latest`). 두 백엔드가 이 하나에 다 들어간다
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
 - `main.py` — pyrealsense2로 컬러+깊이 캡처 → 검출 백엔드(`--backend sam3|dino`) 호출 →
   `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 영상/검출결과 송출
-- `run_sam3_local.sh` — SAM3 TensorRT 백엔드로 실행(호스트 conda env + USB 패스스루 컨테이너)
 - `streaming.py` — :8080 HTTP 전송 계층(MJPEG 영상 + 검출결과 JSON). stdlib 전용
 - `scripts/recv_detections.py` — 스트림 동작 빠른 점검용 CLI
 - `scripts/perception_client.py` — 로봇 PC repo로 복사해 쓰는 재접속 클라이언트(라이브러리)
@@ -203,19 +196,19 @@ lsusb | grep RealSense        # Intel Corp. Intel(R) RealSense(TM) ... 확인
 
 ### 서버 실행 (robot6)
 ```bash
-# SAM3 TensorRT (기본)
-cd /PublicSSD/iitp/iitp_perception && ./run_sam3_local.sh
+cd /PublicSSD/iitp/iitp_perception
 
-# GroundingDINO (기존 경로)
-cd /PublicSSD/iitp/iitp_perception && ./docker_local.sh
+./docker_local.sh                  # SAM3 TensorRT (기본)
+./docker_local.sh --backend dino   # GroundingDINO
 ```
 - 모델 로드(SAM3 ~10초 / DINO ~20초) 후 `streams ready on :8080 ...` 출력되면 준비 완료
 - 중단: 콘솔에서 `Ctrl+C` (컨테이너는 `--rm`이라 자동 정리)
 
 SSH 끊어도 계속 돌리고 싶을 때:
 ```bash
-cd /PublicSSD/iitp/iitp_perception && nohup ./run_sam3_local.sh > stream.log 2>&1 &
-# 중단: kill %1  (docker 경로라면 docker stop iitp_local)
+cd /PublicSSD/iitp/iitp_perception && nohup ./docker_local.sh > stream.log 2>&1 &
+# 중단:
+docker stop iitp_local
 ```
 
 ### 다른 컴퓨터에서 받기 (포트 8080 공유)
@@ -263,8 +256,8 @@ stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 8080 포트에서 제공된다. 정확한 측정을 위해 실제 카메라와 모델이 동작하는 상태로 둔다.
 
 ```bash
-./run_sam3_local.sh   # 또는 ./docker_local.sh
-# 이미 필요한 Python/CUDA 환경 안에 있다면: python3 main.py --backend sam3
+./docker_local.sh
+# 이미 컨테이너 안이라면: python main.py --backend sam3
 ```
 
 로봇 PC에서는 `gp8_control/tools/measure_perception_latency.py`를 실행한다. 이 도구는
@@ -298,7 +291,7 @@ NTP 방식으로 두 PC의 시계 오프셋과 RTT를 먼저 추정하고, 실�
 | 영상은 나오는데 박스 없음 | 객체가 프롬프트(`metal`/`transparent`/`cardboard`) 범주 밖이거나 클래스별 최종 컷 미만 — 카메라 화각/조명 조정, `sam3_detector.default_args()`의 `*_min_score` 확인 |
 | FPS 낮음 | 콘솔의 `objs in 0.XXs` 확인. RTX 4090에서 SAM3 ~0.07s(14 FPS), DINO ~80ms(12 FPS)가 정상 |
 | `SAM3 runtime files missing` | engine 미빌드 → `bash download_sam3_onnx.sh runtime && bash wrap_sam3_trt.sh` |
-| SAM3인데 `RuntimeError: No device connected` | `run_sam3_local.sh` 대신 호스트에서 직접 `main.py`를 띄운 경우. USB 노드가 root 소유라 컨테이너 경유가 필요하다 |
+| 호스트에서 직접 띄웠더니 `No device connected` | USB 노드가 root 소유이고 udev 규칙이 없다. `./docker_local.sh`로 컨테이너 경유해서 실행할 것 |
 | `tensorrt_cu13` / CUDA 13 관련 로드 실패 | 드라이버가 CUDA 12.x인데 cu13 빌드가 깔린 것 → `pip install "tensorrt-cu12<11"` |
 
 ### 포트/해상도 변경
@@ -358,9 +351,9 @@ docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
 # 엔진/eval 테스트는 torch가 없어 자동 skip 된다.
 python3 -m unittest discover -s perception_tests
 
-# 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): grounded_sam 컨테이너에서
+# 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): iitp_local 이미지에서 skip 없이 전부 실행
 docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
-  --name iitp_test chaehyeonsong/grounded_sam:latest \
+  --name iitp_test iitp_local:latest \
   bash -c "cd /mnt && python -m unittest discover -s perception_tests"
 ```
 

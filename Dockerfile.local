@@ -1,4 +1,18 @@
 FROM chaehyeonsong/grounded_sam:latest
 
-# pyrealsense2 wheel ships the librealsense backend, so no extra apt deps needed.
-RUN pip install --no-cache-dir pyrealsense2
+# One image runs both detection backends: GroundingDINO (torch, already in the
+# base) and SAM3 (TensorRT).  No separate env to keep in sync.
+#
+# The pyrealsense2 wheel ships the librealsense backend, so no extra apt deps.
+#
+# tensorrt-cu12 is deliberate: a bare `pip install tensorrt` resolves to the
+# CUDA 13 wheels, which a CUDA 12.x driver cannot load.  The version is pinned
+# because TensorRT refuses to deserialize an engine built by a different one --
+# bump it here and re-run wrap_sam3_trt.sh in the same change.
+#
+# pycuda compiles against the base image's CUDA 12.1 toolkit.
+#
+# transformers stays at the base image's version: SAM3-trt only needs
+# Sam3Processor for its ONNX-export CLI and that import is guarded, so the
+# runtime never drags GroundingDINO onto transformers 5.x.
+RUN pip install --no-cache-dir pyrealsense2 "tensorrt-cu12==10.16.1.11" "pycuda==2026.1"
