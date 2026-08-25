@@ -3,6 +3,12 @@
 The camera is plugged directly into this machine and frames are grabbed via
 pyrealsense2 (no network round-trip from a remote robot PC).
 
+Detection runs on one of two interchangeable backends (--backend):
+    sam3   SAM3 TensorRT, the vendored runtime under SAM3-trt/ (default)
+    dino   the original GroundingDINO engine in iitp_object_detector.py
+Both produce the same per-frame record, so what leaves this process does not
+depend on which one is loaded.
+
 Detections are appended one JSON record per frame to results_local/detections.jsonl
 and pushed live to other computers over HTTP (see streaming.py):
     http://<host>:8080/stream             annotated MJPEG video
@@ -10,6 +16,7 @@ and pushed live to other computers over HTTP (see streaming.py):
     http://<host>:8080/detections/stream  live NDJSON detection stream
 """
 
+import argparse
 import json
 import signal
 import sys
@@ -20,16 +27,12 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 import supervision as sv
-import torch
 
-import iitp_object_detector
+import sam3_detector
 import streaming
 from capture_timing import capture_age_seconds
-from grounding_dino.groundingdino.util.inference import load_model
-from iitp_object_detector import object_detector
 
 
-DEVICE = torch.device("cuda:0")
 GROUNDING_DINO_CONFIG = "grounding_dino/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 GROUNDING_DINO_CHECKPOINT = "checkpoint_best.pth"
 
@@ -145,14 +148,15 @@ def _draw_grid(out: np.ndarray, grid) -> None:
 
 
 def _compose_stream_frame(
-    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int, grid=None
+    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int, overlay, grid=None
 ) -> np.ndarray:
     """Full-size frame: trimmed side quarters blurred, raw center dropped in,
     then the cm grid and detection boxes/labels drawn on top in full-frame coords.
 
     `center_bgr` is the raw center crop spanning columns [x0:x1) and the full
-    height. Boxes come from the detector in crop coords and are shifted by x0,
-    so labels render on top of everything — including the blurred sides.
+    height. `overlay` is the backend's (xyxy, class_ids, labels) in crop coords;
+    boxes are shifted by x0 so labels render on top of everything -- including
+    the blurred sides.
     """
     out = full_bgr.copy()
     out[:, :x0] = cv2.GaussianBlur(out[:, :x0], (0, 0), BLUR_SIGMA)
@@ -162,15 +166,14 @@ def _compose_stream_frame(
     if grid is not None:
         _draw_grid(out, grid)
 
-    det = iitp_object_detector.LAST_DETECTIONS
-    labels = iitp_object_detector.LAST_LABELS
-    if det is not None and len(det) > 0:
-        xyxy = det.xyxy.copy()
+    crop_xyxy, class_ids, labels = overlay
+    if len(crop_xyxy) > 0:
+        xyxy = np.asarray(crop_xyxy, dtype=np.float32).copy()
         xyxy[:, [0, 2]] += x0  # crop pixel coords -> full-frame coords
-        shifted = sv.Detections(xyxy=xyxy, class_id=det.class_id)
+        shifted = sv.Detections(xyxy=xyxy, class_id=np.asarray(class_ids))
         out = _BOX_ANNOTATOR.annotate(scene=out, detections=shifted)
 
-        # Engine builds "<class> <score> (<X>,<Y>,<Z>)m"; split on first " (".
+        # Backends build "<class> <score> (<X>,<Y>)m"; split on first " (".
         heads, coords = [], []
         for lbl in labels:
             if " (" in lbl:
@@ -190,14 +193,65 @@ def _compose_stream_frame(
         )
         virt_xyxy = xyxy.copy()
         virt_xyxy[:, 1] -= _COORD_LABEL_H  # raise the top so class sits higher
-        virt = sv.Detections(xyxy=virt_xyxy, class_id=det.class_id)
+        virt = sv.Detections(xyxy=virt_xyxy, class_id=np.asarray(class_ids))
         out = _LABEL_ANNOTATOR_CLASS.annotate(
             scene=out, detections=virt, labels=heads
         )
     return out
 
 
-def main() -> None:
+def _load_sam3_backend():
+    """SAM3 TensorRT backend: (detect, overlay) closures over one engine set."""
+    detector = sam3_detector.Sam3Detector()
+    return detector.detect, (lambda: detector.last_overlay)
+
+
+def _load_dino_backend():
+    """GroundingDINO backend, kept so this branch can be compared to master."""
+    import torch
+
+    import iitp_object_detector
+    from grounding_dino.groundingdino.util.inference import load_model
+    from iitp_object_detector import object_detector
+
+    model = load_model(
+        model_config_path=GROUNDING_DINO_CONFIG,
+        model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
+        device=torch.device("cuda:0"),
+    )
+
+    def detect(color_np, depth_np, project):
+        return object_detector(model, color_np, depth_np, project)
+
+    def overlay():
+        det = iitp_object_detector.LAST_DETECTIONS
+        labels = iitp_object_detector.LAST_LABELS
+        if det is None or len(det) == 0:
+            return sam3_detector.EMPTY_OVERLAY
+        return det.xyxy, det.class_id, labels
+
+    return detect, overlay
+
+
+BACKENDS = {"sam3": _load_sam3_backend, "dino": _load_dino_backend}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--backend", choices=sorted(BACKENDS), default="sam3",
+        help="detection engine behind the stream (default: sam3)",
+    )
+    parser.add_argument(
+        "--port", type=int, default=STREAM_PORT,
+        help=f"HTTP port for video + detections (default: {STREAM_PORT})",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv)
+
     pipeline = rs.pipeline()
     cfg = rs.config()
     cfg.enable_stream(rs.stream.color, COLOR_W, COLOR_H, rs.format.bgr8, FPS)
@@ -232,13 +286,10 @@ def main() -> None:
         f"inference crop: cols [{crop_x0}:{crop_x1}] of {COLOR_W}", flush=True
     )
 
-    # Depth-free projection. Prefer a 4-point homography (handles camera tilt)
-    # if calibration/homography.json exists; otherwise fall back to the plain
-    # pixel-ratio scaled to VISIBLE_Y_LENGTH_M. Z is always 0.0 (not measured).
-    # Flat 2D-plane assumption: no camera-tilt / homography correction. Pure
-    # linear pixel-ratio mapping (image center origin, +X right, +Y down),
-    # scaled so the full image height spans VISIBLE_Y_LENGTH_M. px_to_cm /
-    # cm_to_px map FULL-frame pixels <-> real cm.
+    # Depth-free projection. Flat 2D-plane assumption: no camera-tilt /
+    # homography correction. Pure linear pixel-ratio mapping (image center
+    # origin, +X right, +Y down), scaled so the full image height spans
+    # VISIBLE_Y_LENGTH_M. px_to_cm / cm_to_px map FULL-frame pixels <-> real cm.
     cm_per_pixel = (VISIBLE_Y_LENGTH_M / COLOR_H) * 100.0
     img_cx = COLOR_W / 2.0
     img_cy = COLOR_H / 2.0
@@ -263,17 +314,13 @@ def main() -> None:
 
     align = rs.align(rs.stream.color)
 
-    print("loading grounding model...", flush=True)
-    model = load_model(
-        model_config_path=GROUNDING_DINO_CONFIG,
-        model_checkpoint_path=GROUNDING_DINO_CHECKPOINT,
-        device=DEVICE,
-    )
+    print(f"loading {args.backend} model...", flush=True)
+    detect, overlay = BACKENDS[args.backend]()
     print(f"writing results to {JSONL_PATH}", flush=True)
 
-    streaming.start_server(STREAM_PORT, FPS)
+    streaming.start_server(args.port, FPS)
     print(
-        f"streams ready on :{STREAM_PORT}  "
+        f"streams ready on :{args.port}  "
         f"(/stream video, /detections latest, /detections/stream live)",
         flush=True,
     )
@@ -321,8 +368,8 @@ def main() -> None:
                     flush=True,
                 )
                 capture_timestamp_warned = True
-            bounding_boxes, class_names, confidences = object_detector(
-                model, color_crop, depth_crop, project
+            bounding_boxes, class_names, confidences = detect(
+                color_crop, depth_crop, project
             )
             elapsed = time.time() - ts
 
@@ -343,7 +390,7 @@ def main() -> None:
             # center dropped in, and detection boxes/labels drawn on top (labels
             # may overlap the blurred sides).
             frame_to_publish = _compose_stream_frame(
-                color_np, color_crop, crop_x0, crop_x1, grid
+                color_np, color_crop, crop_x0, crop_x1, overlay(), grid
             )
             _publish_frame(frame_to_publish)
 

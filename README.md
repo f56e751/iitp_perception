@@ -55,8 +55,13 @@ docker rm iitp
 ## 구조: 프로덕션 진입점 vs 평가 도구
 
 - **`main.py`** — 프로덕션 진입점. 카메라 입력 → 모델 추론 → 결과를 `results_local/detections.jsonl`에
-  기록 + 포트 8080 MJPEG 스트림 송출. 이것만 한다. 실행은 `docker_local.sh`(아래 "Local capture" 섹션).
-- **`iitp_object_detector.py`** — 공유 엔진(라이브러리). `main.py`와 `scripts/`가 모두 import.
+  기록 + 포트 8080 MJPEG 스트림 송출. 이것만 한다. 검출기는 `--backend`로 고른다
+  (`sam3` 기본 / `dino`). 실행은 `docker_local.sh`(아래 "Local capture" 섹션).
+- **`sam3_detector.py`** — SAM3 TensorRT 백엔드 어댑터. `SAM3-trt/` 런타임을 감싸서
+  `object_detector`와 **같은** `(bounding_boxes, class_names, confidences)`를 돌려준다.
+  tensorrt/pycuda import는 지연 로딩이라 이 모듈 자체는 어디서나 import 가능.
+- **`SAM3-trt/`** — vendoring한 SAM3 TensorRT 런타임(수정 없음). 아래 "SAM3 TensorRT backend" 참고.
+- **`iitp_object_detector.py`** — GroundingDINO 엔진(라이브러리). `--backend dino`와 `scripts/`가 import.
   단독 폴더 배치 검출도 가능: `python iitp_object_detector.py -i <폴더>/`.
 - **`scripts/`** — 오프라인 평가·분석 도구. 각 스크립트를 직접 실행하거나 `scripts/run_one.sh`로 묶어서 실행.
 
@@ -73,14 +78,103 @@ docker rm iitp
 
 ---
 
+## SAM3 TensorRT backend (기본 검출기)
+
+`main.py --backend sam3`은 GroundingDINO 대신 SAM3를 TensorRT engine으로 돌린다.
+**송출 계약은 그대로다**: 포트 8080의 `/stream`, `/detections`, `/detections/stream`,
+`/latency`, jsonl 스키마, 클래스 이름(`transparent`/`metal`/`cardboard`)이 모두 동일하므로
+로봇 PC의 `perception_client.py`는 수정 없이 동작한다. 바뀌는 것은 박스를 만드는 모델뿐이다.
+
+GroundingDINO는 박스를 직접 회귀하지만 SAM3는 프롬프트별 **마스크**를 내고 그 마스크의
+bounding box를 쓴다. 그래서 박스가 물체 윤곽에 더 붙는다. 프롬프트는 `SAM3-trt`의
+`DEFAULT_PROMPT_SPECS`(카테고리당 1~2개 자연어 문구)를 그대로 쓴다.
+
+### 구성 파일
+- `SAM3-trt/serve_trt_iitp_usls.py` — vendoring한 런타임. `UslsSam3Runner`(vision/text/decoder
+  engine 3개) + `RuntimeSegmenter`(카테고리 충돌 해소 · NMS · 인스턴스화)
+- `sam3_detector.py` — 위 런타임을 이 repo의 검출 계약으로 변환하는 얇은 어댑터
+- `download_sam3_onnx.sh` / `wrap_sam3_trt.sh` — ONNX 내려받기 / TensorRT engine 빌드
+- `Dockerfile.local` — 두 백엔드를 모두 담은 `iitp_local:latest` 이미지 (TensorRT · pycuda 추가)
+
+### 사전 준비 (최초 1회)
+
+**1) 추론 환경.** 별도 env 없이 기존 `iitp_local` 이미지 하나에 두 백엔드가 다 들어간다
+(`Dockerfile.local`이 베이스 grounded_sam 위에 TensorRT · pycuda · pyrealsense2를 얹는다).
+카메라도 이 컨테이너로 잡는다 — 호스트에는 librealsense udev 규칙이 없고 USB 노드가
+root 소유(`crw-rw-r-- root root`)라 호스트에서 바로 열면 `No device connected`가 난다.
+
+```bash
+cd /PublicSSD/iitp/iitp_perception
+docker build -f Dockerfile.local -t iitp_local:latest .
+```
+
+TensorRT는 반드시 **cu12** 빌드여야 한다. 그냥 `pip install tensorrt`를 쓰면 CUDA 13
+빌드(`tensorrt_cu13`)가 깔려 CUDA 12.x 드라이버에서 로드되지 않는다. 버전을 고정한 이유는
+engine이 직렬화한 TensorRT 버전에 묶이기 때문 — 올릴 때는 `wrap_sam3_trt.sh`도 같이 다시 돌린다.
+
+**2) ONNX 다운로드 (~4.2 GB)** — `weights/`는 gitignore 대상이라 clone 후 한 번 받아야 한다.
+
+```bash
+cd /PublicSSD/iitp/iitp_perception
+bash download_sam3_onnx.sh runtime
+```
+
+**3) TensorRT engine 빌드 (~10분).** engine은 GPU/CUDA/TensorRT/드라이버 버전에 묶여 있으므로
+머신마다 다시 만들어야 한다.
+
+```bash
+cd /PublicSSD/iitp/iitp_perception
+docker run -i --rm --gpus all --ipc=host -v "$PWD":/mnt -w /mnt \
+  iitp_local:latest bash wrap_sam3_trt.sh
+```
+
+산출물:
+```text
+weights/SAM3-trt/usls_engines_b2p2/vision_b2_fp16.engine
+weights/SAM3-trt/usls_engines/text_b6_fp16.engine
+weights/SAM3-trt/usls_engines/decoder_b1_p32_fp16.engine
+weights/usls/tokenizer.json
+```
+
+`Serialization assertion stdVersionRead == kSERIALIZATION_VERSION failed`가 뜨면 TensorRT
+버전이 바뀐 것이다. 같은 ONNX로 `wrap_sam3_trt.sh`만 다시 돌리면 된다.
+
+### 실행
+
+```bash
+cd /PublicSSD/iitp/iitp_perception
+./docker_local.sh
+# 인자는 main.py로 그대로 전달된다: ./docker_local.sh --port 8081
+```
+- engine 로드(컨테이너 기동 포함 ~10초) 후 `streams ready on :8080 ...` 이 뜨면 준비 완료
+- 중단: `Ctrl+C`
+- GroundingDINO로 되돌리려면: `./docker_local.sh --backend dino`
+
+### 튜닝
+
+임계값·프롬프트는 `sam3_detector.default_args()`에 모여 있고, 기본값은 vendoring한
+`serve_trt_iitp_usls.py`의 argparse 기본값 + `--precision-tuned-preset`과 같다.
+
+| 설정 | 기본값 | 의미 |
+|---|---|---|
+| `score_thr` | 0.4 | decoder raw score 1차 컷 |
+| `transparent/metal/cardboard_min_score` | 0.60 / 0.50 / 0.45 | 클래스별 최종 컷 (preset) |
+| `cross_category_iou` / `_overlap` | 0.25 / 0.55 | 같은 물체를 두 클래스가 물었을 때 해소 기준 |
+| `merge_nms_iou` | 0.5 | 클래스 내부 박스 NMS |
+| `process_area_thr` | 1000 | 마스크 분할/병합 판단 면적(px) |
+| `temporal_vote` | `False` | 프레임 간 마스크 투표. 벨트 속도(px/frame)를 재고 나서 켤 것 |
+
+---
+
 ## Local capture + MJPEG stream (robot6 직결 모드)
 
 RealSense 카메라를 이 서버(robot6)에 USB로 직결해서, 네트워크 왕복 없이 바로 SAM 추론을 돌리고 바운딩박스가 그려진 영상을 다른 컴퓨터(로봇 PC 등)의 브라우저로 실시간 송출하는 모드.
 
 ### 구성 파일
-- `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2`만 얹은 파생 이미지 (`iitp_local:latest`)
+- `Dockerfile.local` — 기존 `chaehyeonsong/grounded_sam` 이미지 위에 `pyrealsense2` · TensorRT · pycuda를 얹은 파생 이미지 (`iitp_local:latest`). 두 백엔드가 이 하나에 다 들어간다
 - `docker_local.sh` — USB 패스스루(`--privileged`, `-v /dev:/dev`) + `--network host`로 컨테이너 실행
-- `main.py` — pyrealsense2로 컬러+깊이 캡처 → `object_detector` 호출 → `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 영상/검출결과 송출
+- `main.py` — pyrealsense2로 컬러+깊이 캡처 → 검출 백엔드(`--backend sam3|dino`) 호출 →
+  `results_local/detections.jsonl`에 결과 추가, 포트 8080에서 영상/검출결과 송출
 - `streaming.py` — :8080 HTTP 전송 계층(MJPEG 영상 + 검출결과 JSON). stdlib 전용
 - `scripts/recv_detections.py` — 스트림 동작 빠른 점검용 CLI
 - `scripts/perception_client.py` — 로봇 PC repo로 복사해 쓰는 재접속 클라이언트(라이브러리)
@@ -93,7 +187,7 @@ sudo usermod -aG docker iitp
 # 로그아웃/재로그인 또는 newgrp docker
 
 # 2) 파생 이미지 빌드 (베이스 이미지 chaehyeonsong/grounded_sam:latest가 이미 로컬에 있어야 함)
-cd /PublicSSD/iitp
+cd /PublicSSD/iitp/iitp_perception
 docker build -f Dockerfile.local -t iitp_local:latest .
 
 # 3) RealSense 카메라를 robot6 USB 3.x 포트에 연결
@@ -102,15 +196,17 @@ lsusb | grep RealSense        # Intel Corp. Intel(R) RealSense(TM) ... 확인
 
 ### 서버 실행 (robot6)
 ```bash
-cd /PublicSSD/iitp
-./docker_local.sh
+cd /PublicSSD/iitp/iitp_perception
+
+./docker_local.sh                  # SAM3 TensorRT (기본)
+./docker_local.sh --backend dino   # GroundingDINO
 ```
-- 모델 로드(~20초) 후 `streams ready on :8080 ...` 출력되면 준비 완료
+- 모델 로드(SAM3 ~10초 / DINO ~20초) 후 `streams ready on :8080 ...` 출력되면 준비 완료
 - 중단: 콘솔에서 `Ctrl+C` (컨테이너는 `--rm`이라 자동 정리)
 
 SSH 끊어도 계속 돌리고 싶을 때:
 ```bash
-cd /PublicSSD/iitp && nohup ./docker_local.sh > stream.log 2>&1 &
+cd /PublicSSD/iitp/iitp_perception && nohup ./docker_local.sh > stream.log 2>&1 &
 # 중단:
 docker stop iitp_local
 ```
@@ -161,7 +257,7 @@ stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 
 ```bash
 ./docker_local.sh
-# 이미 필요한 Python/CUDA 환경 안에 있다면: python3 main.py
+# 이미 컨테이너 안이라면: python main.py --backend sam3
 ```
 
 로봇 PC에서는 `gp8_control/tools/measure_perception_latency.py`를 실행한다. 이 도구는
@@ -192,8 +288,11 @@ NTP 방식으로 두 PC의 시계 오프셋과 RTT를 먼저 추정하고, 실�
 | `permission denied ... docker daemon` | docker 그룹 적용 안 됨 → `newgrp docker` 또는 재로그인. 임시: `sg docker -c ./docker_local.sh` |
 | `RuntimeError: No device connected` | 카메라 USB 재연결, USB 3.x 포트 사용 확인 (`lsusb` USB 2.x로 잡히면 대역폭 부족) |
 | 클라이언트 접속 안 됨 | 방화벽: `sudo ufw status` 확인 후 필요 시 `sudo ufw allow 8080/tcp` |
-| 영상은 나오는데 박스 없음 | 객체가 프롬프트(`metal`/`transparent`/`cardboard`) 범주 밖이거나 신뢰도 < 0.2 — 카메라 화각/조명 조정 |
-| FPS 낮음 | 콘솔의 `objs in 0.XXs` 확인. RTX 4090에서 ~80ms(12 FPS)가 정상 |
+| 영상은 나오는데 박스 없음 | 객체가 프롬프트(`metal`/`transparent`/`cardboard`) 범주 밖이거나 클래스별 최종 컷 미만 — 카메라 화각/조명 조정, `sam3_detector.default_args()`의 `*_min_score` 확인 |
+| FPS 낮음 | 콘솔의 `objs in 0.XXs` 확인. RTX 4090에서 SAM3 ~0.07s(14 FPS), DINO ~80ms(12 FPS)가 정상 |
+| `SAM3 runtime files missing` | engine 미빌드 → `bash download_sam3_onnx.sh runtime && bash wrap_sam3_trt.sh` |
+| 호스트에서 직접 띄웠더니 `No device connected` | USB 노드가 root 소유이고 udev 규칙이 없다. `./docker_local.sh`로 컨테이너 경유해서 실행할 것 |
+| `tensorrt_cu13` / CUDA 13 관련 로드 실패 | 드라이버가 CUDA 12.x인데 cu13 빌드가 깔린 것 → `pip install "tensorrt-cu12<11"` |
 
 ### 포트/해상도 변경
 `main.py` 상단 상수:
@@ -252,9 +351,9 @@ docker run -it --rm --gpus all --ipc=host -v $PWD:/mnt \
 # 엔진/eval 테스트는 torch가 없어 자동 skip 된다.
 python3 -m unittest discover -s perception_tests
 
-# 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): grounded_sam 컨테이너에서
+# 전체(엔진 NMS/IoU/기하 + eval 클래스별 점수 포함): iitp_local 이미지에서 skip 없이 전부 실행
 docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
-  --name iitp_test chaehyeonsong/grounded_sam:latest \
+  --name iitp_test iitp_local:latest \
   bash -c "cd /mnt && python -m unittest discover -s perception_tests"
 ```
 
@@ -265,6 +364,7 @@ docker run -i --rm --gpus all --ipc=host -v $PWD:/mnt \
 | `test_analyze_tracks.py` | 혼동행렬·정확도 집계 | 호스트 |
 | `test_apply_corrections.py` | delete/reassign 보정 적용 | 호스트 (cv2) |
 | `test_streaming.py` | `build_record`, /detections·/detections/stream 엔드포인트 | 호스트 |
+| `test_sam3_detector.py` | SAM3 인스턴스 → 검출 계약 변환, 라벨/정렬/클래스 id | 호스트 (cv2+pillow) |
 | `test_fake_stream.py` | 더미 producer `random_detections` 정합성 | 호스트 |
 | `test_engine.py` | `_iou_xyxy`, `nms_by_label`, 기하/마스크 | 컨테이너 (torch) |
 | `test_eval_detector.py` | `class_spans`, `per_class_scores` | 컨테이너 (torch) |
