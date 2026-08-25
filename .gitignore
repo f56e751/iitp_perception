@@ -18,3 +18,7 @@ grounding_dino/groundingdino.egg-info
 
 *__pycache__
 *.so
+
+# SAM3 ONNX + TensorRT engines (download_sam3_onnx.sh / wrap_sam3_trt.sh)
+weights
+output
