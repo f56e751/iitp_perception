@@ -7,7 +7,11 @@
 # checks that otherwise hang on this host's broken IPv6 route.
 HF_CACHE="${HF_CACHE:-/PublicSSD/iitp/hf_cache}"
 
-docker run -it --rm \
+# -t only when attached to a terminal, so nohup runs do not fail.
+tty_flags=(-i)
+[[ -t 0 ]] && tty_flags=(-i -t)
+
+docker run "${tty_flags[@]}" --rm \
   --network host \
   --gpus all \
   --ipc=host \
@@ -19,4 +23,4 @@ docker run -it --rm \
   -e TRANSFORMERS_OFFLINE=1 \
   --name iitp_local \
   iitp_local:latest \
-  bash -c "cd /mnt && python main.py"
+  bash -c "cd /mnt && python main.py --backend dino"

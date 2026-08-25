@@ -194,7 +194,7 @@ sudo usermod -aG docker iitp
 # 로그아웃/재로그인 또는 newgrp docker
 
 # 2) 파생 이미지 빌드 (베이스 이미지 chaehyeonsong/grounded_sam:latest가 이미 로컬에 있어야 함)
-cd /PublicSSD/iitp
+cd /PublicSSD/iitp/iitp_perception
 docker build -f Dockerfile.local -t iitp_local:latest .
 
 # 3) RealSense 카메라를 robot6 USB 3.x 포트에 연결
@@ -207,7 +207,7 @@ lsusb | grep RealSense        # Intel Corp. Intel(R) RealSense(TM) ... 확인
 cd /PublicSSD/iitp/iitp_perception && ./run_sam3_local.sh
 
 # GroundingDINO (기존 경로)
-cd /PublicSSD/iitp && ./docker_local.sh
+cd /PublicSSD/iitp/iitp_perception && ./docker_local.sh
 ```
 - 모델 로드(SAM3 ~10초 / DINO ~20초) 후 `streams ready on :8080 ...` 출력되면 준비 완료
 - 중단: 콘솔에서 `Ctrl+C` (컨테이너는 `--rm`이라 자동 정리)
@@ -263,8 +263,8 @@ stream_detections("http://147.46.175.15:8080/detections/stream", on_record)
 8080 포트에서 제공된다. 정확한 측정을 위해 실제 카메라와 모델이 동작하는 상태로 둔다.
 
 ```bash
-./docker_local.sh
-# 이미 필요한 Python/CUDA 환경 안에 있다면: python3 main.py
+./run_sam3_local.sh   # 또는 ./docker_local.sh
+# 이미 필요한 Python/CUDA 환경 안에 있다면: python3 main.py --backend sam3
 ```
 
 로봇 PC에서는 `gp8_control/tools/measure_perception_latency.py`를 실행한다. 이 도구는
