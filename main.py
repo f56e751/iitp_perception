@@ -148,7 +148,8 @@ def _draw_grid(out: np.ndarray, grid) -> None:
 
 
 def _compose_stream_frame(
-    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int, overlay, grid=None
+    full_bgr: np.ndarray, center_bgr: np.ndarray, x0: int, x1: int, overlay, grid=None,
+    flow=None,
 ) -> np.ndarray:
     """Full-size frame: trimmed side quarters blurred, raw center dropped in,
     then the cm grid and detection boxes/labels drawn on top in full-frame coords.
@@ -197,7 +198,53 @@ def _compose_stream_frame(
         out = _LABEL_ANNOTATOR_CLASS.annotate(
             scene=out, detections=virt, labels=heads
         )
+    _draw_flow(out, flow, x1)
     return out
+
+
+# Belt-frame axes here: +X image right, +Y image DOWN (see px_to_cm). The robot
+# side (gp8_control perception/extrinsics.py) assumes cy is UPSTREAM-positive,
+# i.e. objects should move toward -cy. Showing the tracker's learned belt flow
+# against that contract makes a re-mounted / rotated camera obvious on the
+# video (2026-10-19: flow was +cy, the robot picked everything ~2.7 s early
+# until its GP8_CAM_SIGN_CY was flipped).
+_FLOW_OK = (80, 220, 80)
+_FLOW_WARN = (0, 200, 255)
+
+
+def _draw_flow(out: np.ndarray, flow, x1: int) -> None:
+    h = out.shape[0]
+    org = (x1 + 8, 22)
+    if flow is None:
+        cv2.putText(out, "BELT FLOW: learning...", org, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        return
+    vx, vy = float(flow[0]), float(flow[1])
+    speed = float(np.hypot(vx, vy))
+    if speed < 0.02:
+        cv2.putText(out, "BELT FLOW: stopped", org, cv2.FONT_HERSHEY_SIMPLEX,
+                    0.45, (200, 200, 200), 1, cv2.LINE_AA)
+        return
+    contract_ok = vy < 0.0          # objects travel toward -cy (image up)
+    color = _FLOW_OK if contract_ok else _FLOW_WARN
+    # arrow in the right margin, pointing the way objects move on screen
+    cx, cy0 = x1 + (out.shape[1] - x1) // 2, h // 2
+    L = 60
+    tip = (int(cx + L * vx / speed), int(cy0 + L * vy / speed))
+    tail = (int(cx - L * vx / speed), int(cy0 - L * vy / speed))
+    cv2.arrowedLine(out, tail, tip, color, 4, cv2.LINE_AA, tipLength=0.35)
+    # The right margin is only ~150 px wide: keep each line short.
+    lines = [
+        f"FLOW {speed:.2f} m/s",
+        "screen " + ("UP (-cy)" if vy < 0 else "DOWN (+cy)"),
+        "cy+=upstream:",
+        "OK" if contract_ok else "REVERSED",
+    ]
+    if not contract_ok:
+        lines += ["robot needs", "SIGN_CY = -1"]
+    for i, text in enumerate(lines):
+        cv2.putText(out, text, (org[0], org[1] + 17 * i), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.42, color, 1, cv2.LINE_AA)
 
 
 def _load_sam3_backend():
@@ -209,6 +256,7 @@ def _load_sam3_backend():
         (lambda: detector.last_track_ids),
         (lambda: detector.last_center_radius_m),
         (lambda: detector.last_center_confirmed),
+        (lambda: detector.tracker.velocity),
     )
 
 
@@ -238,7 +286,7 @@ def _load_dino_backend():
 
     # GroundingDINO is stateless per frame and offers neither identity nor a
     # centre radius; None tells consumers to fall back to their own matching.
-    return detect, overlay, (lambda: None), (lambda: None), (lambda: None)
+    return detect, overlay, (lambda: None), (lambda: None), (lambda: None), (lambda: None)
 
 
 BACKENDS = {"sam3": _load_sam3_backend, "dino": _load_dino_backend}
@@ -323,7 +371,7 @@ def main(argv=None) -> None:
     align = rs.align(rs.stream.color)
 
     print(f"loading {args.backend} model...", flush=True)
-    detect, overlay, track_ids, center_radius, center_conf = BACKENDS[args.backend]()
+    detect, overlay, track_ids, center_radius, center_conf, belt_flow = BACKENDS[args.backend]()
     print(f"writing results to {JSONL_PATH}", flush=True)
 
     streaming.start_server(args.port, FPS)
@@ -401,7 +449,8 @@ def main(argv=None) -> None:
             # center dropped in, and detection boxes/labels drawn on top (labels
             # may overlap the blurred sides).
             frame_to_publish = _compose_stream_frame(
-                color_np, color_crop, crop_x0, crop_x1, overlay(), grid
+                color_np, color_crop, crop_x0, crop_x1, overlay(), grid,
+                flow=belt_flow(),
             )
             _publish_frame(frame_to_publish)
 
