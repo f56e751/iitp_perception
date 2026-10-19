@@ -216,13 +216,13 @@ def _draw_flow(out: np.ndarray, flow, x1: int) -> None:
     h = out.shape[0]
     org = (x1 + 8, 22)
     if flow is None:
-        cv2.putText(out, "BELT FLOW: learning...", org, cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(out, "FLOW: learning", org, cv2.FONT_HERSHEY_SIMPLEX,
                     0.45, (200, 200, 200), 1, cv2.LINE_AA)
         return
     vx, vy = float(flow[0]), float(flow[1])
     speed = float(np.hypot(vx, vy))
     if speed < 0.02:
-        cv2.putText(out, "BELT FLOW: stopped", org, cv2.FONT_HERSHEY_SIMPLEX,
+        cv2.putText(out, "FLOW: stopped", org, cv2.FONT_HERSHEY_SIMPLEX,
                     0.45, (200, 200, 200), 1, cv2.LINE_AA)
         return
     contract_ok = vy < 0.0          # objects travel toward -cy (image up)
