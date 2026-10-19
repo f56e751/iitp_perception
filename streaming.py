@@ -26,7 +26,7 @@ _fps = 30
 
 # Bump when the detection record layout changes incompatibly. Consumers can
 # read record["schema_version"] to detect a producer/consumer mismatch.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 
 
 def build_record(
@@ -39,11 +39,29 @@ def build_record(
     capture_timestamp=None,
     capture_age_s=None,
     capture_timestamp_domain=None,
+    track_ids=None,
+    center_radius_m=None,
+    center_confirmed=None,
 ):
     """Serialize one frame's detections into a JSON-ready dict.
 
-    bounding_boxes / class_names / confidences are parallel arrays (same order,
-    one entry per kept detection).  Each bounding box contains four projected
+    bounding_boxes / class_names / confidences / track_ids are parallel arrays
+    (same order, one entry per kept detection).  ``track_ids`` carries object
+    identity across frames, so a consumer never has to re-derive which
+    detection is which object; it is ``None`` from a backend that cannot
+    track.
+
+    ``center_radius_m`` is how far each detection sits from the image centre on
+    the belt plane.  Both the projected position and the class label are at
+    their most trustworthy where it is smallest: height parallax and lens
+    distortion are zero on the optical axis and grow radially, and an object
+    near the frame edge may still be half outside it.  A consumer that keeps
+    one estimate per object should take it from the smallest-radius frame
+    rather than averaging every frame equally.
+
+    ``center_confirmed`` marks that frame directly: it is True exactly once per
+    object, on its closest approach to the centre.  A consumer can simply latch
+    the pose and class of any detection flagged here and ignore the rest.  Each bounding box contains four projected
     belt-plane points in clockwise order: top-left, top-right, bottom-right,
     bottom-left.  Every point is ``[X, Y, Z]`` in metres.
     """
@@ -62,6 +80,15 @@ def build_record(
         ],
         "class_names": list(class_names),
         "confidences": [float(c) for c in confidences],
+        "track_ids": None if track_ids is None else [int(t) for t in track_ids],
+        "center_radius_m": (
+            None if center_radius_m is None
+            else [float(r) for r in center_radius_m]
+        ),
+        "center_confirmed": (
+            None if center_confirmed is None
+            else [bool(b) for b in center_confirmed]
+        ),
     }
 
 

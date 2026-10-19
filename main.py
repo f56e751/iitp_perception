@@ -201,9 +201,15 @@ def _compose_stream_frame(
 
 
 def _load_sam3_backend():
-    """SAM3 TensorRT backend: (detect, overlay) closures over one engine set."""
+    """SAM3 backend: detect + overlay/track_ids/radii/confirmed getters."""
     detector = sam3_detector.Sam3Detector()
-    return detector.detect, (lambda: detector.last_overlay)
+    return (
+        detector.detect,
+        (lambda: detector.last_overlay),
+        (lambda: detector.last_track_ids),
+        (lambda: detector.last_center_radius_m),
+        (lambda: detector.last_center_confirmed),
+    )
 
 
 def _load_dino_backend():
@@ -230,7 +236,9 @@ def _load_dino_backend():
             return sam3_detector.EMPTY_OVERLAY
         return det.xyxy, det.class_id, labels
 
-    return detect, overlay
+    # GroundingDINO is stateless per frame and offers neither identity nor a
+    # centre radius; None tells consumers to fall back to their own matching.
+    return detect, overlay, (lambda: None), (lambda: None), (lambda: None)
 
 
 BACKENDS = {"sam3": _load_sam3_backend, "dino": _load_dino_backend}
@@ -315,7 +323,7 @@ def main(argv=None) -> None:
     align = rs.align(rs.stream.color)
 
     print(f"loading {args.backend} model...", flush=True)
-    detect, overlay = BACKENDS[args.backend]()
+    detect, overlay, track_ids, center_radius, center_conf = BACKENDS[args.backend]()
     print(f"writing results to {JSONL_PATH}", flush=True)
 
     streaming.start_server(args.port, FPS)
@@ -382,6 +390,9 @@ def main(argv=None) -> None:
                 capture_timestamp=capture_timestamp,
                 capture_age_s=capture_age,
                 capture_timestamp_domain=str(timestamp_domain),
+                track_ids=track_ids(),
+                center_radius_m=center_radius(),
+                center_confirmed=center_conf(),
             )
             f.write(json.dumps(record) + "\n")
             streaming.publish_detections(record)

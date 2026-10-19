@@ -14,11 +14,13 @@ runnable there.
 
 import importlib.util
 import os
+import time
 from types import SimpleNamespace
 
 import numpy as np
 
 from bbox_projection import project_bounding_boxes
+from tracking import ObjectTracker
 
 _ROOT = os.path.dirname(os.path.abspath(__file__))
 SAM3_DIR = os.path.join(_ROOT, "SAM3-trt")
@@ -109,8 +111,10 @@ def instances_to_detections(instances, project, depth_np):
     of the image fed to the model (the centre crop).  They are re-ordered by
     score, highest first, so the stream labels the most confident object first.
 
-    Returns ``(bounding_boxes, class_names, confidences, overlay)`` where
-    ``overlay`` is ``(xyxy, class_ids, labels)`` in those same crop pixels.
+    Returns ``(bounding_boxes, class_names, confidences, radii, overlay)``.
+    ``radii`` is each detection's distance from the image centre on the belt
+    plane; ``overlay`` is ``(xyxy, class_ids, labels)`` in those same crop
+    pixels.
     """
     ordered = sorted(instances, key=lambda inst: -float(inst["score"]))
     class_names = [normalize_category(inst["category"]) for inst in ordered]
@@ -132,7 +136,16 @@ def instances_to_detections(instances, project, depth_np):
         f"{sum(p[1] for p in box) / len(box):+.2f})m"
         for name, score, box in zip(class_names, confidences, bounding_boxes)
     ]
-    return bounding_boxes, class_names, confidences, (xyxy, class_ids, labels)
+    # Distance from the image centre, which is where the projection is most
+    # accurate: height parallax and lens distortion both vanish on the optical
+    # axis and grow with radius.  Published so the consumer can prefer the
+    # frame that saw the object most centred.
+    radii = [
+        float(np.hypot(sum(p[0] for p in box) / len(box),
+                       sum(p[1] for p in box) / len(box)))
+        for box in bounding_boxes
+    ]
+    return bounding_boxes, class_names, confidences, radii, (xyxy, class_ids, labels)
 
 
 EMPTY_OVERLAY = (np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=int), [])
@@ -160,19 +173,45 @@ class Sam3Detector:
         # (xyxy, class_ids, labels).  main.py shifts it onto the full frame.
         self.last_overlay = EMPTY_OVERLAY
         self.last_timing_ms = None
+        # One tracker for the whole session: it carries object identity (and
+        # the learned belt velocity) across frames.
+        self.tracker = ObjectTracker()
+        self.last_track_ids = []
+        self.last_center_radius_m = []
+        self.last_center_confirmed = []
 
-    def detect(self, color_np, depth_np, project, frame_delta=1.0):
-        """Run one BGR frame through SAM3; same shape as object_detector()."""
+    def detect(self, color_np, depth_np, project, frame_delta=1.0, timestamp=None):
+        """Run one BGR frame through SAM3; same shape as object_detector().
+
+        Also assigns each detection a ``track_id`` (see :mod:`tracking`), left
+        on ``last_track_ids`` so the caller can publish identities without
+        changing this return signature -- the GroundingDINO backend returns the
+        same three values and simply has no ids to offer.
+        """
         import cv2
         import PIL.Image
 
         image = PIL.Image.fromarray(cv2.cvtColor(color_np, cv2.COLOR_BGR2RGB))
         result = self.segmenter.infer(image, frame_delta=frame_delta)
         self.last_timing_ms = result.get("timing_ms")
-        bounding_boxes, class_names, confidences, overlay = instances_to_detections(
+        bounding_boxes, class_names, confidences, radii, overlay = instances_to_detections(
             result["instances"], project, depth_np
         )
         self.last_overlay = overlay
+        self.last_center_radius_m = radii
+        # Track on the projected belt-plane centroids: real metres, so the
+        # tracker's gates do not depend on resolution or crop geometry.
+        centroids = [
+            (sum(pt[0] for pt in box) / len(box), sum(pt[1] for pt in box) / len(box))
+            for box in bounding_boxes
+        ]
+        self.last_track_ids = self.tracker.update(
+            centroids,
+            class_names,
+            confidences,
+            time.time() if timestamp is None else timestamp,
+        )
+        self.last_center_confirmed = self.tracker.last_confirmed
         return bounding_boxes, class_names, confidences
 
 
